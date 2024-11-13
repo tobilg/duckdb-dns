@@ -1124,7 +1124,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "955d28af4278de8121b7ebeb796b6a45735dc01436d898801014aced2773a3d6"
 
 [[package]]
-name = "rusty-quack"
+name = "rusty_quack"
 version = "0.1.0"
 dependencies = [
  "duckdb",

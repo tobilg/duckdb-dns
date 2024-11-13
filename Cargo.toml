@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [[example]]
-name = "rusty-quack"
+name = "rusty_quack"
 path = "src/wasm_lib.rs"
 crate-type = ["staticlib"]
 

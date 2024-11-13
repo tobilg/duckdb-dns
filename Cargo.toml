@@ -6,6 +6,11 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[[example]]
+name = "rusty-quack"
+path = "src/wasm_lib.rs"
+crate-type = ["staticlib"]
+
 [dependencies]
 duckdb = { version = "1.1.1", features = ["vtab-loadable"] }
 duckdb-loadable-macros = "0.1.3"

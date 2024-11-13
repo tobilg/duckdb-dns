@@ -23,15 +23,3 @@ test_release: test_extension_release
 
 clean: clean_build clean_rust
 clean_all: clean_configure clean
-
-wasm_mvp: export DUCKDB_PLATFORM = wasm_mvp
-wasm_mvp: configure release
-	cp -r build/release build/wasm_mvp
-
-wasm_eh: export DUCKDB_PLATFORM = wasm_eh
-wasm_eh: configure release
-	cp -r build/release build/wasm_eh
-
-wasm_threads: export DUCKDB_PLATFORM = wasm_coi
-wasm_threads: configure release
-	cp -r build/release build/wasm_threads

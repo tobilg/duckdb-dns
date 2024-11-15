@@ -9,8 +9,8 @@ MINIMUM_DUCKDB_VERSION=v0.0.1
 all: configure debug
 
 # Include makefiles from DuckDB
-include extension-ci-tools/makefiles/duckdb_extension_c_api.Makefile
-include extension-ci-tools/makefiles/duckdb_extension_rs.Makefile
+include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
+include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 
 configure: venv platform extension_version
 

@@ -19,6 +19,6 @@ jobs:
     with:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
-      extension_name: duckdb_dns
+      extension_name: dns
       extra_toolchains: rust;python3
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl'

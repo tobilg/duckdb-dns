@@ -1,0 +1,116 @@
+# name: test/sql/dns.test
+# description: test dns extension
+# group: [dns]
+
+# Before we load the extension, this will fail
+statement error
+SELECT reverse_dns_lookup('8.8.8.8');
+----
+Catalog Error: Scalar Function with name reverse_dns_lookup does not exist!
+
+statement error
+SELECT dns_lookup('google.com');
+----
+Catalog Error: Scalar Function with name dns_lookup does not exist!
+
+# Require statement will ensure the extension is loaded from now on
+require dns
+
+# Test reverse DNS lookup with Google's DNS server
+query I
+SELECT reverse_dns_lookup('8.8.8.8');
+----
+dns.google
+
+# Test DNS lookup for google.com (should return an IP address)
+query I
+SELECT dns_lookup('google.com') IS NOT NULL;
+----
+true
+
+# Test DNS lookup for localhost
+query I
+SELECT dns_lookup('localhost');
+----
+127.0.0.1
+
+# Test invalid IP address (should return NULL)
+query I
+SELECT reverse_dns_lookup('999.999.999.999') IS NULL;
+----
+true
+
+# Test nonexistent hostname (should return NULL)
+query I
+SELECT dns_lookup('this-domain-definitely-does-not-exist-12345.com') IS NULL;
+----
+true
+
+# Test multiple lookups in a single query with a table
+query I
+SELECT COUNT(*) FROM (
+  SELECT dns_lookup('google.com') as ip
+  UNION ALL
+  SELECT dns_lookup('cloudflare.com') as ip
+) WHERE ip IS NOT NULL;
+----
+2
+
+# Test reverse DNS lookup with Cloudflare DNS
+query I
+SELECT reverse_dns_lookup('1.1.1.1') IS NOT NULL;
+----
+true
+
+# Test scalar functions work in WHERE clause
+query I
+SELECT COUNT(*) FROM (SELECT 1) WHERE dns_lookup('localhost') = '127.0.0.1';
+----
+1
+
+# Test with NULL input
+query I
+SELECT reverse_dns_lookup(NULL) IS NULL;
+----
+true
+
+query I
+SELECT dns_lookup(NULL) IS NULL;
+----
+true
+
+# Test dns_lookup_all function
+query I
+SELECT dns_lookup_all('google.com') IS NOT NULL;
+----
+true
+
+# Test dns_lookup_all returns array
+query I
+SELECT typeof(dns_lookup_all('google.com'));
+----
+VARCHAR[]
+
+# Test dns_lookup_all with multiple IPs (Cloudflare typically returns 2)
+query I
+SELECT len(dns_lookup_all('cloudflare.com')) >= 1;
+----
+true
+
+# Test dns_lookup_all with NULL input
+query I
+SELECT dns_lookup_all(NULL) IS NULL;
+----
+true
+
+# Test dns_lookup_all with invalid hostname
+query I
+SELECT dns_lookup_all('this-domain-definitely-does-not-exist-12345.com') IS NULL;
+----
+true
+
+# Test unnesting dns_lookup_all results
+query I
+SELECT COUNT(*) >= 1 FROM (SELECT unnest(dns_lookup_all('google.com')) as ip);
+----
+true

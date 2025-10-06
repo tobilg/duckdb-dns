@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "duckdb-rs-repository": {
+      "type": "sse",
+      "url": "https://gitmcp.io/duckdb/duckdb-rs"
+    },
+    "extension-template-rs-repository": {
+      "type": "sse",
+      "url": "https://gitmcp.io/duckdb/extension-template-rs"
+    },
+    "docs-rs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@nuskey8/docs-rs-mcp@latest"
+      ],
+      "env": {}
+    }
+  }
+}

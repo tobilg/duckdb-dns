@@ -1,5 +1,5 @@
 [package]
-name = "rusty_quack"
+name = "dns"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,16 +10,10 @@ crate-type = ["cdylib"]
 lto = true
 strip = true
 
-[[example]]
-# crate-type can't be (at the moment) be overriden for specific targets
-# src/wasm_lib.rs forwards to src/lib.rs so that we can change from cdylib
-# (that is needed while compiling natively) to staticlib (needed since the
-# actual linking will be done via emcc
-name = "rusty_quack"
-path = "src/wasm_lib.rs"
-crate-type = ["staticlib"]
-
 [dependencies]
-duckdb = { version = "1.4.0", features = ["vtab-loadable"] }
+duckdb = { version = "1.4.0", features = ["vtab-loadable", "vscalar"] }
 duckdb-loadable-macros = "0.1.10"
 libduckdb-sys = { version = "1.4.0", features = ["loadable-extension"] }
+tokio = { version = "1.42", features = ["rt", "net", "macros", "rt-multi-thread"] }
+trust-dns-resolver = "0.23"
+futures = "0.3"

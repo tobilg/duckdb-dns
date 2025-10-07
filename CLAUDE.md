@@ -8,13 +8,19 @@ This is a DuckDB extension called "dns" that provides DNS lookup functionality. 
 
 ### Extension Functions
 
-The extension provides two scalar functions:
+The extension provides three scalar functions:
 
-1. **`reverse_dns_lookup(ip_address)`**: Takes an IPv4 address string and returns the resolved hostname as a VARCHAR, or NULL on error
-2. **`dns_lookup(hostname)`**: Takes a hostname string and returns the first resolved IPv4 address as a VARCHAR, or NULL on error
-3. **`dns_lookup_all(hostname)`**: Takes a hostname string and returns a VARCHAR array of all resolved IPv4 addresses, or NULL on error
+1. **`reverse_dns_lookup(ip_address)`**: Takes a mandatory `ip_address` IPv4 address string and returns the resolved hostname as a VARCHAR, or NULL on error
 
-Both functions return NULL on errors rather than throwing exceptions.
+2. **`dns_lookup(hostname, [record_type])`**: Takes a mandatory `hostname` string, and an optional `record_type` string. Supported record types: A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA (see https://docs.rs/hickory-proto/0.25.2/hickory_proto/rr/record_type/enum.RecordType.html#variants for full list). Returns the first resolved IPv4 address as a VARCHAR if `record_type` is not specified, or the first record of the specified `record_type` as a VARCHAR, or NULL on error.
+
+3. **`dns_lookup_all(hostname, [record_type])`**: Takes a mandatory `hostname` string, and an optional `record_type` string (same types as above). Returns all resolved IPv4 addresses as a VARCHAR[] if `record_type` is not specified, or a VARCHAR array of all resolved records of the specified `record_type`, or NULL on error.
+
+The extension provides one table function:
+
+4. **`corey(hostname)`**: Takes a mandatory `hostname` string and queries for TXT records. Returns all TXT records found as a table with a single column `txt_record` of type VARCHAR, or an empty result set if no records are found.
+
+All functions return NULL on errors rather than throwing exceptions.
 
 ## Build System
 
@@ -73,26 +79,27 @@ Scalar functions are implemented using the `ScalarFunction` and `ScalarFunctionS
 
 ### DNS Resolution Implementation
 
-The extension uses the `trust-dns-resolver` crate for DNS queries:
+The extension uses the `hickory-resolver` crate (formerly `trust-dns-resolver`) for DNS queries:
 
-- **Forward DNS**: `dns_lookup_impl()` resolves hostnames to the first IPv4 address using `Resolver::lookup_ip()`
-- **Reverse DNS**: `reverse_dns_lookup_impl()` resolves IPv4 addresses to hostnames using `Resolver::reverse_lookup()`
+- **Forward DNS**: `dns_lookup_async()` resolves hostnames to the first IPv4 address using `Resolver::lookup_ip()`
+- **Reverse DNS**: `reverse_dns_lookup_async()` resolves IPv4 addresses to hostnames using `Resolver::reverse_lookup()`
 
 Key implementation details:
 - IPv4 validation is performed in `validate_ipv4()` using standard library's `Ipv4Addr::from_str()`
 - Only IPv4 addresses are returned (IPv6 is filtered out)
 - `dns_lookup()` returns only the first IPv4 address found (not all addresses)
-- DNS queries use `Resolver::new()` with default configuration
-- The resolver is synchronous (not async/tokio-based)
+- DNS queries use `Resolver::builder_with_config()` with default configuration and `TokioConnectionProvider`
+- The resolver is asynchronous (tokio-based) with a runtime created for each batch
 - Errors return NULL rather than propagating exceptions
-- The vectorized C functions process entire input batches for performance
+- The vectorized C functions process entire input batches for performance using concurrent async operations
 
 ### Dependencies
 - `duckdb` (v1.4.0) with "vtab-loadable" and "vscalar" features
 - `duckdb-loadable-macros` (v0.1.10) for entry point macros
 - `libduckdb-sys` (v1.4.0) with "loadable-extension" feature
-- `tokio` (v1.42) with "rt" and "net" features (for DNS resolution)
-- `trust-dns-resolver` (v0.23) for DNS lookups
+- `tokio` (v1.42) with "rt", "net", "macros", and "rt-multi-thread" features (for async DNS resolution)
+- `hickory-resolver` (v0.25) for DNS lookups (successor to `trust-dns-resolver`)
+- `futures` (v0.3) for async utilities
 
 ### Configuration
 - **DuckDB target version**: v1.4.0 (defined in Makefile)

@@ -8,6 +8,10 @@
       "type": "sse",
       "url": "https://gitmcp.io/duckdb/extension-template-rs"
     },
+    "hickory-dns-repository": {
+      "type": "sse",
+      "url": "https://gitmcp.io/hickory-dns/hickory-dns"
+    },
     "docs-rs": {
       "type": "stdio",
       "command": "npx",

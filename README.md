@@ -8,6 +8,7 @@ A DuckDB extension for performing DNS lookups and reverse DNS lookups, written i
 - **Reverse DNS Lookup**: Resolve IPv4 addresses to hostnames
 - **Multiple Record Types**: Query A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA records
 - **Configurable DNS Resolver**: Switch between DNS providers (Google, Cloudflare, Quad9) with instant configuration changes
+- **Configurable Concurrency Limit**: Control the number of concurrent DNS requests to prevent TCP connection exhaustion (default: 50)
 - **Pure Rust Implementation**: No DuckDB build or C++ code required
 - **Efficient DNS Resolution**: Uses hickory-resolver with built-in LRU cache and TTL support
 - **NULL-safe**: Returns NULL on errors instead of throwing exceptions
@@ -131,6 +132,42 @@ SELECT set_dns_config('default');
 SELECT set_dns_config('invalid');
 -- Returns: Unknown preset 'invalid'. Supported: default, google, cloudflare, quad9
 ```
+
+### `set_dns_concurrency_limit(limit)`
+
+Updates the concurrency limit for DNS lookup operations to prevent TCP connection exhaustion. This controls the maximum number of concurrent DNS requests that can run simultaneously across all DNS operations.
+
+**Parameters:**
+- `limit` (BIGINT): The maximum number of concurrent DNS requests (must be greater than 0)
+
+**Returns:** VARCHAR - A success or error message
+
+**Default:** 50 concurrent requests
+
+**Examples:**
+```sql
+-- Set concurrency limit to 100 for systems with limited resources
+SELECT set_dns_concurrency_limit(100);
+-- Returns: Concurrency limit updated to 100
+
+-- Set concurrency limit to 500 for high-throughput scenarios
+SELECT set_dns_concurrency_limit(500);
+-- Returns: Concurrency limit updated to 500
+
+-- Reset to default (50)
+SELECT set_dns_concurrency_limit(50);
+-- Returns: Concurrency limit updated to 50
+
+-- Invalid limit returns error
+SELECT set_dns_concurrency_limit(0);
+-- Returns: Concurrency limit must be greater than 0
+
+-- All subsequent DNS lookups use the new limit
+SELECT dns_lookup('example.com');
+SELECT reverse_dns_lookup('8.8.8.8');
+```
+
+**Note:** This setting applies globally to all DNS lookup operations and takes effect immediately. The concurrency limit helps prevent TCP connection exhaustion on systems performing large-scale DNS queries.
 
 ### `corey(hostname)` - Table Function
 
@@ -407,7 +444,7 @@ make test_debug
 
 ### Architecture
 
-The extension implements four scalar functions and one table function:
+The extension implements five scalar functions and one table function:
 
 #### Scalar Functions (using `VScalar` trait):
 
@@ -421,10 +458,14 @@ The extension implements four scalar functions and one table function:
 4. **SetDnsConfig**: Update DNS resolver configuration
    - Supports presets: default, google, cloudflare, quad9
    - Uses lock-free atomic operations (arc-swap) for instant changes
+5. **SetConcurrencyLimit**: Update concurrency limit for DNS requests
+   - Controls maximum number of concurrent DNS lookups (default: 50)
+   - Uses lock-free atomic operations (arc-swap) for instant changes
+   - Prevents TCP connection exhaustion
 
 #### Table Function (using `VTab` trait):
 
-5. **Corey**: TXT record query (hostname → table of TXT records)
+6. **Corey**: TXT record query (hostname → table of TXT records)
    - Returns a table with one row per TXT record
    - Useful for filtering and aggregation
 

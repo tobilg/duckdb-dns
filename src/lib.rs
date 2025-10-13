@@ -38,9 +38,11 @@ static GLOBAL_DNS_STATE: Lazy<DnsResolverState> = Lazy::new(|| {
 /// Contains a long-lived Tokio runtime and DNS resolver that are reused
 /// across multiple function invocations to enable caching of DNS queries.
 /// The resolver is wrapped in an ArcSwap for lock-free reads with atomic updates.
+/// The concurrency semaphore limits the number of concurrent DNS requests.
 struct DnsResolverState {
     runtime: tokio::runtime::Runtime,
     resolver: ArcSwap<Resolver<TokioConnectionProvider>>,
+    concurrency_semaphore: ArcSwap<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Default for DnsResolverState {
@@ -55,7 +57,10 @@ impl Default for DnsResolverState {
             )
             .build()
         );
-        DnsResolverState { runtime, resolver }
+        let concurrency_semaphore = ArcSwap::from_pointee(
+            Arc::new(tokio::sync::Semaphore::new(50))
+        );
+        DnsResolverState { runtime, resolver, concurrency_semaphore }
     }
 }
 
@@ -79,6 +84,20 @@ impl DnsResolverState {
 
         // Atomic swap - lock-free operation
         self.resolver.store(Arc::new(new_resolver));
+        Ok(())
+    }
+
+    /// Updates the concurrency limit for DNS lookups
+    ///
+    /// Creates a new semaphore with the specified limit and atomically
+    /// replaces the existing semaphore. This operation is lock-free and extremely fast.
+    fn set_dns_concurrency_limit(&self, limit: usize) -> std::result::Result<(), Box<dyn Error>> {
+        if limit == 0 {
+            return Err("Concurrency limit must be greater than 0".into());
+        }
+        let new_semaphore = Arc::new(tokio::sync::Semaphore::new(limit));
+        // Atomic swap - lock-free operation
+        self.concurrency_semaphore.store(Arc::new(new_semaphore));
         Ok(())
     }
 }
@@ -340,18 +359,21 @@ impl VScalar for ReverseDnsLookup {
 
         // Use the global resolver state - load once for all lookups
         let resolver = &GLOBAL_DNS_STATE.resolver;
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
 
-        // Process all lookups concurrently
+        // Process all lookups concurrently with semaphore-controlled execution
         let futures: Vec<_> = strings
             .iter()
             .enumerate()
             .map(|(i, ip_address)| {
                 let is_null = input_vector.row_is_null(i as u64);
                 let ip_address = ip_address.clone();
+                let sem = semaphore.clone();
                 async move {
                     if is_null {
                         (i, None)
                     } else {
+                        let _permit = sem.acquire().await.unwrap();
                         let result = reverse_dns_lookup_async(resolver, &ip_address).await;
                         (i, result.ok())
                     }
@@ -457,8 +479,9 @@ impl VScalar for DnsLookup {
 
         // Use the global resolver state - load once for all lookups
         let resolver = &GLOBAL_DNS_STATE.resolver;
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
 
-        // Process all lookups concurrently
+        // Process all lookups concurrently with semaphore-controlled execution
         let futures: Vec<_> = hostnames
             .iter()
             .enumerate()
@@ -466,10 +489,12 @@ impl VScalar for DnsLookup {
                 let is_null = hostname_vector.row_is_null(i as u64);
                 let hostname = hostname.clone();
                 let record_type_opt = record_types.as_ref().and_then(|rt| rt[i].clone());
+                let sem = semaphore.clone();
                 async move {
                     if is_null {
                         (i, None)
                     } else {
+                        let _permit = sem.acquire().await.unwrap();
                         let result = if let Some(record_type_str) = record_type_opt {
                             match parse_record_type(&record_type_str) {
                                 Ok(record_type) => {
@@ -593,8 +618,9 @@ impl VScalar for DnsLookupAll {
 
         // Use the global resolver state - load once for all lookups
         let resolver = &GLOBAL_DNS_STATE.resolver;
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
 
-        // Process all lookups concurrently
+        // Process all lookups concurrently with semaphore-controlled execution
         let futures: Vec<_> = hostnames
             .iter()
             .enumerate()
@@ -602,10 +628,12 @@ impl VScalar for DnsLookupAll {
                 let is_null = hostname_vector.row_is_null(i as u64);
                 let hostname = hostname.clone();
                 let record_type_opt = record_types.as_ref().and_then(|rt| rt[i].clone());
+                let sem = semaphore.clone();
                 async move {
                     if is_null {
                         None
                     } else {
+                        let _permit = sem.acquire().await.unwrap();
                         let result = if let Some(record_type_str) = record_type_opt {
                             match parse_record_type(&record_type_str) {
                                 Ok(record_type) => {
@@ -758,6 +786,93 @@ impl VScalar for SetDnsConfig {
     }
 }
 
+/// Concurrency limit configuration scalar function
+///
+/// Updates the concurrency limit for DNS lookup operations to prevent TCP connection exhaustion.
+///
+/// # Arguments
+/// * `limit` - A BIGINT specifying the maximum number of concurrent DNS requests (must be > 0)
+///
+/// # Returns
+/// * VARCHAR - Success message or error description
+///
+/// # Examples
+/// ```sql
+/// -- Set concurrency limit to 100
+/// SELECT set_dns_concurrency_limit(100);
+/// -- Returns: Concurrency limit updated to 100
+///
+/// -- Set concurrency limit to 500 for high-throughput scenarios
+/// SELECT set_dns_concurrency_limit(500);
+/// -- Returns: Concurrency limit updated to 500
+///
+/// -- Reset to default (50)
+/// SELECT set_dns_concurrency_limit(50);
+/// -- Returns: Concurrency limit updated to 50
+///
+/// -- Invalid limit returns error
+/// SELECT set_dns_concurrency_limit(0);
+/// -- Returns: Concurrency limit must be greater than 0
+/// ```
+///
+/// # Note
+/// This setting applies globally to all DNS lookup operations and takes effect immediately.
+struct SetConcurrencyLimit;
+
+impl VScalar for SetConcurrencyLimit {
+    type State = ();
+
+    unsafe fn invoke(
+        _state: &Self::State,
+        input: &mut DataChunkHandle,
+        output: &mut dyn WritableVector,
+    ) -> std::result::Result<(), Box<dyn Error>> {
+        let size = input.len();
+        let input_vector = input.flat_vector(0);
+        let mut output_vector = output.flat_vector();
+
+        // Get input values
+        let values = input_vector.as_slice_with_len::<i64>(size);
+
+        for i in 0..size {
+            if input_vector.row_is_null(i as u64) {
+                output_vector.set_null(i);
+                continue;
+            }
+
+            let limit = values[i];
+
+            if limit <= 0 {
+                let error_msg = "Concurrency limit must be greater than 0";
+                output_vector.insert(i, error_msg);
+                continue;
+            }
+
+            // Update the global concurrency limit
+            // This is a lock-free atomic operation - extremely fast!
+            match GLOBAL_DNS_STATE.set_dns_concurrency_limit(limit as usize) {
+                Ok(_) => {
+                    let success_msg = format!("Concurrency limit updated to {}", limit);
+                    output_vector.insert(i, &success_msg);
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to update concurrency limit: {}", e);
+                    output_vector.insert(i, &error_msg);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn signatures() -> Vec<ScalarFunctionSignature> {
+        vec![ScalarFunctionSignature::exact(
+            vec![LogicalTypeHandle::from(LogicalTypeId::Bigint)],
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        )]
+    }
+}
+
 /// Table function for querying TXT DNS records
 ///
 /// Returns all TXT records for a given hostname as a table with one row per record.
@@ -898,6 +1013,7 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     con.register_scalar_function::<DnsLookup>("dns_lookup")?;
     con.register_scalar_function::<DnsLookupAll>("dns_lookup_all")?;
     con.register_scalar_function::<SetDnsConfig>("set_dns_config")?;
+    con.register_scalar_function::<SetConcurrencyLimit>("set_dns_concurrency_limit")?;
     con.register_table_function::<Corey>("corey")?;
     Ok(())
 }

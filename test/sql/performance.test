@@ -1,0 +1,194 @@
+# name: test/sql/perf_tranco.test
+# description: performance-oriented repeated DNS lookups using Tranco domain lists
+# group: [dns]
+
+require dns
+
+# ---- Test 1: Low Concurrency (10) with 100 domains ----
+statement ok
+SELECT set_dns_concurrency_limit(10);
+
+# Round 1 (cache miss)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+)
+SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 2 (cache hit - should be faster)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+)
+SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 3 (cache hit - should be fastest)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+)
+SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# ---- Test 2: Medium Concurrency (50) with 200 domains ----
+statement ok
+SELECT set_dns_concurrency_limit(50);
+
+# Round 1 (cache miss)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+)
+SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 2 (cache hit - should be faster)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+)
+SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 3 (cache hit - should be fastest)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+)
+SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# ---- Test 3: High Concurrency (100) with 300 domains ----
+statement ok
+SELECT set_dns_concurrency_limit(100);
+
+# Round 1 (cache miss)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+)
+SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 2 (cache hit - should be faster)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+)
+SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 3 (cache hit - should be fastest)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+)
+SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# ---- Test 4: Very High Concurrency (200) with 500 domains ----
+statement ok
+SELECT set_dns_concurrency_limit(200);
+
+# Round 1 (cache miss)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+)
+SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 2 (cache hit - should be faster)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+)
+SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 3 (cache hit - should be fastest)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+)
+SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# ---- Test 5: Maximum Concurrency (500) with 1000 domains ----
+statement ok
+SELECT set_dns_concurrency_limit(500);
+
+# Round 1 (cache miss)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+)
+SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 2 (cache hit - should be faster)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+)
+SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Round 3 (cache hit - should be fastest)
+query I
+WITH domains AS (
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+)
+SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
+  SELECT dns_lookup(domain) AS ip FROM domains
+) t WHERE ip IS NOT NULL;
+----
+1
+
+# Reset to default
+statement ok
+SELECT set_dns_concurrency_limit(250);

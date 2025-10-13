@@ -11,17 +11,6 @@ USE_UNSTABLE_C_API=1
 # Target DuckDB version
 TARGET_DUCKDB_VERSION=v1.4.1
 
-# Exclude performance.test on Windows platforms
-ifeq ($(DUCKDB_PLATFORM),windows_amd64)
-	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
-endif
-ifeq ($(DUCKDB_PLATFORM),windows_amd64_rtools)
-	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
-endif
-ifeq ($(DUCKDB_PLATFORM),windows_amd64_mingw)
-	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
-endif
-
 all: configure debug
 
 # Include makefiles from DuckDB
@@ -32,6 +21,19 @@ configure: venv platform extension_version
 
 debug: build_extension_library_debug build_extension_with_metadata_debug
 release: build_extension_library_release build_extension_with_metadata_release
+
+# Override test targets for Windows to exclude performance.test
+ifeq ($(DUCKDB_PLATFORM),windows_amd64)
+test_extension_release_internal:
+	@echo "Running RELEASE tests (excluding performance.test on Windows).."
+	@$(TEST_RUNNER) --test-dir test/sql --file-path dns.test --external-extension build/release/$(EXTENSION_NAME).duckdb_extension
+	@$(TEST_RUNNER) --test-dir test/sql --file-path cache_performance.test --external-extension build/release/$(EXTENSION_NAME).duckdb_extension
+
+test_extension_debug_internal:
+	@echo "Running DEBUG tests (excluding performance.test on Windows).."
+	@$(TEST_RUNNER) --test-dir test/sql --file-path dns.test --external-extension build/debug/$(EXTENSION_NAME).duckdb_extension
+	@$(TEST_RUNNER) --test-dir test/sql --file-path cache_performance.test --external-extension build/debug/$(EXTENSION_NAME).duckdb_extension
+endif
 
 test: test_debug
 test_debug: test_extension_debug

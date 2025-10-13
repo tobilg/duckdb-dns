@@ -11,6 +11,17 @@ USE_UNSTABLE_C_API=1
 # Target DuckDB version
 TARGET_DUCKDB_VERSION=v1.4.1
 
+# Exclude performance.test on Windows platforms
+ifeq ($(DUCKDB_PLATFORM),windows_amd64)
+	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
+endif
+ifeq ($(DUCKDB_PLATFORM),windows_amd64_rtools)
+	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
+endif
+ifeq ($(DUCKDB_PLATFORM),windows_amd64_mingw)
+	EXTRA_EXTENSIONS_PARAM=--exclude performance.test
+endif
+
 all: configure debug
 
 # Include makefiles from DuckDB

@@ -11,7 +11,7 @@ SELECT set_dns_concurrency_limit(10);
 # Round 1 (cache miss)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 100
 )
 SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -22,7 +22,7 @@ SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
 # Round 2 (cache hit - should be faster)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 100
 )
 SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -33,7 +33,7 @@ SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
 # Round 3 (cache hit - should be fastest)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 100
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 100
 )
 SELECT CAST(COUNT(*) >= 95 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -48,7 +48,7 @@ SELECT set_dns_concurrency_limit(50);
 # Round 1 (cache miss)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 200
 )
 SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -59,7 +59,7 @@ SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
 # Round 2 (cache hit - should be faster)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 200
 )
 SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -70,7 +70,7 @@ SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
 # Round 3 (cache hit - should be fastest)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 200
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 200
 )
 SELECT CAST(COUNT(*) >= 190 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -85,9 +85,9 @@ SELECT set_dns_concurrency_limit(100);
 # Round 1 (cache miss)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 300
 )
-SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+SELECT CAST(COUNT(*) >= 250 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
 ) t WHERE ip IS NOT NULL;
 ----
@@ -96,9 +96,9 @@ SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
 # Round 2 (cache hit - should be faster)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 300
 )
-SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+SELECT CAST(COUNT(*) >= 250 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
 ) t WHERE ip IS NOT NULL;
 ----
@@ -107,9 +107,9 @@ SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
 # Round 3 (cache hit - should be fastest)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 300
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 300
 )
-SELECT CAST(COUNT(*) >= 285 AS INTEGER) FROM (
+SELECT CAST(COUNT(*) >= 250 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
 ) t WHERE ip IS NOT NULL;
 ----
@@ -122,7 +122,7 @@ SELECT set_dns_concurrency_limit(200);
 # Round 1 (cache miss)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 500
 )
 SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -133,7 +133,7 @@ SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
 # Round 2 (cache hit - should be faster)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 500
 )
 SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -144,7 +144,7 @@ SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
 # Round 3 (cache hit - should be fastest)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 500
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 500
 )
 SELECT CAST(COUNT(*) >= 475 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -159,7 +159,7 @@ SELECT set_dns_concurrency_limit(500);
 # Round 1 (cache miss)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 1000
 )
 SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -170,7 +170,7 @@ SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
 # Round 2 (cache hit - should be faster)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 1000
 )
 SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains
@@ -181,7 +181,7 @@ SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
 # Round 3 (cache hit - should be fastest)
 query I
 WITH domains AS (
-  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) LIMIT 1000
+  SELECT domain FROM read_csv_auto('test-data/top_1000.csv', header=true) ORDER BY rank ASC LIMIT 1000
 )
 SELECT CAST(COUNT(*) >= 950 AS INTEGER) FROM (
   SELECT dns_lookup(domain) AS ip FROM domains

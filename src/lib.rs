@@ -39,10 +39,12 @@ static GLOBAL_DNS_STATE: Lazy<DnsResolverState> = Lazy::new(|| {
 /// across multiple function invocations to enable caching of DNS queries.
 /// The resolver is wrapped in an ArcSwap for lock-free reads with atomic updates.
 /// The concurrency semaphore limits the number of concurrent DNS requests.
+/// The cache size determines how many DNS query results are cached.
 struct DnsResolverState {
     runtime: tokio::runtime::Runtime,
     resolver: ArcSwap<Resolver<TokioConnectionProvider>>,
     concurrency_semaphore: ArcSwap<Arc<tokio::sync::Semaphore>>,
+    cache_size: ArcSwap<usize>,
 }
 
 impl Default for DnsResolverState {
@@ -50,17 +52,31 @@ impl Default for DnsResolverState {
     fn default() -> Self {
         let runtime = tokio::runtime::Runtime::new()
             .expect("Failed to create Tokio runtime");
+        
+        // Default cache size of 4096 entries
+        let cache_size = 4096;
+        let mut opts = ResolverOpts::default();
+        opts.cache_size = cache_size;
+        
         let resolver = ArcSwap::from_pointee(
             Resolver::builder_with_config(
                 ResolverConfig::default(),
                 TokioConnectionProvider::default(),
             )
+            .with_options(opts)
             .build()
         );
         let concurrency_semaphore = ArcSwap::from_pointee(
             Arc::new(tokio::sync::Semaphore::new(50))
         );
-        DnsResolverState { runtime, resolver, concurrency_semaphore }
+        let cache_size_atomic = ArcSwap::from_pointee(cache_size);
+        
+        DnsResolverState { 
+            runtime, 
+            resolver, 
+            concurrency_semaphore,
+            cache_size: cache_size_atomic,
+        }
     }
 }
 
@@ -76,10 +92,16 @@ impl DnsResolverState {
     /// replaces the existing resolver. This clears the DNS cache.
     /// This operation is lock-free and extremely fast.
     fn update_config(&self, config: ResolverConfig) -> std::result::Result<(), Box<dyn Error>> {
+        // Use the stored cache size preference
+        let cache_size = **self.cache_size.load();
+        let mut opts = ResolverOpts::default();
+        opts.cache_size = cache_size;
+        
         let new_resolver = Resolver::builder_with_config(
             config,
             TokioConnectionProvider::default(),
         )
+        .with_options(opts)
         .build();
 
         // Atomic swap - lock-free operation
@@ -98,6 +120,36 @@ impl DnsResolverState {
         let new_semaphore = Arc::new(tokio::sync::Semaphore::new(limit));
         // Atomic swap - lock-free operation
         self.concurrency_semaphore.store(Arc::new(new_semaphore));
+        Ok(())
+    }
+
+    /// Updates the DNS cache size
+    ///
+    /// Creates a new resolver with the specified cache size and atomically
+    /// replaces the existing resolver. This clears the DNS cache.
+    /// This operation is lock-free and extremely fast.
+    fn set_dns_cache_size(&self, size: usize) -> std::result::Result<(), Box<dyn Error>> {
+        if size == 0 {
+            return Err("Cache size must be greater than 0".into());
+        }
+        
+        // Store the new cache size preference
+        self.cache_size.store(Arc::new(size));
+        
+        // Get the current config and rebuild resolver with new cache size
+        let current_config = self.resolver.load().config().clone();
+        let mut opts = self.resolver.load().options().clone();
+        opts.cache_size = size;
+        
+        let new_resolver = Resolver::builder_with_config(
+            current_config,
+            TokioConnectionProvider::default(),
+        )
+        .with_options(opts)
+        .build();
+        
+        // Atomic swap - existing queries continue with old resolver
+        self.resolver.store(Arc::new(new_resolver));
         Ok(())
     }
 }
@@ -873,6 +925,87 @@ impl VScalar for SetConcurrencyLimit {
     }
 }
 
+/// Cache size configuration scalar function
+///
+/// Updates the DNS cache size for the resolver. The cache stores DNS query results
+/// to improve performance by avoiding repeated lookups for the same queries.
+///
+/// # Arguments
+/// * `size` - A BIGINT specifying the maximum number of cached DNS queries (must be > 0)
+///
+/// # Returns
+/// * VARCHAR - Success message or error description
+///
+/// # Examples
+/// ```sql
+/// -- Set cache size to 4096 (default)
+/// SELECT set_dns_cache_size(4096);
+/// -- Returns: DNS cache size updated to 4096
+///
+/// -- Set cache size to 8192 for larger workloads
+/// SELECT set_dns_cache_size(8192);
+/// -- Returns: DNS cache size updated to 8192
+/// ```
+///
+/// # Note
+/// Changing the cache size rebuilds the resolver and clears the existing cache.
+/// This operation takes effect immediately for all subsequent DNS queries.
+struct SetDnsCacheSize;
+
+impl VScalar for SetDnsCacheSize {
+    type State = ();
+
+    unsafe fn invoke(
+        _state: &Self::State,
+        input: &mut DataChunkHandle,
+        output: &mut dyn WritableVector,
+    ) -> std::result::Result<(), Box<dyn Error>> {
+        let size = input.len();
+        let input_vector = input.flat_vector(0);
+        let mut output_vector = output.flat_vector();
+
+        // Get input values
+        let values = input_vector.as_slice_with_len::<i64>(size);
+
+        for i in 0..size {
+            if input_vector.row_is_null(i as u64) {
+                output_vector.set_null(i);
+                continue;
+            }
+
+            let cache_size = values[i];
+
+            if cache_size <= 0 {
+                let error_msg = "Cache size must be greater than 0";
+                output_vector.insert(i, error_msg);
+                continue;
+            }
+
+            // Update the global cache size
+            // This is a lock-free atomic operation - extremely fast!
+            match GLOBAL_DNS_STATE.set_dns_cache_size(cache_size as usize) {
+                Ok(_) => {
+                    let success_msg = format!("DNS cache size updated to {}", cache_size);
+                    output_vector.insert(i, &success_msg);
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to update cache size: {}", e);
+                    output_vector.insert(i, &error_msg);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn signatures() -> Vec<ScalarFunctionSignature> {
+        vec![ScalarFunctionSignature::exact(
+            vec![LogicalTypeHandle::from(LogicalTypeId::Bigint)],
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        )]
+    }
+}
+
 /// Table function for querying TXT DNS records
 ///
 /// Returns all TXT records for a given hostname as a table with one row per record.
@@ -1014,6 +1147,7 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     con.register_scalar_function::<DnsLookupAll>("dns_lookup_all")?;
     con.register_scalar_function::<SetDnsConfig>("set_dns_config")?;
     con.register_scalar_function::<SetConcurrencyLimit>("set_dns_concurrency_limit")?;
+    con.register_scalar_function::<SetDnsCacheSize>("set_dns_cache_size")?;
     con.register_table_function::<Corey>("corey")?;
     Ok(())
 }

@@ -9,6 +9,7 @@ A DuckDB extension for performing DNS lookups and reverse DNS lookups, written i
 - **Multiple Record Types**: Query A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA records
 - **Configurable DNS Resolver**: Switch between DNS providers (Google, Cloudflare, Quad9) with instant configuration changes
 - **Configurable Concurrency Limit**: Control the number of concurrent DNS requests to prevent TCP connection exhaustion (default: 50)
+- **Configurable Cache Size**: Adjust the DNS cache size for optimal performance (default: 4096 entries)
 - **Pure Rust Implementation**: No DuckDB build or C++ code required
 - **Efficient DNS Resolution**: Uses hickory-resolver with built-in LRU cache and TTL support
 - **NULL-safe**: Returns NULL on errors instead of throwing exceptions
@@ -168,6 +169,34 @@ SELECT reverse_dns_lookup('8.8.8.8');
 ```
 
 **Note:** This setting applies globally to all DNS lookup operations and takes effect immediately. The concurrency limit helps prevent TCP connection exhaustion on systems performing large-scale DNS queries.
+
+### `set_dns_cache_size(size)`
+
+Updates the DNS cache size for the resolver. The cache stores DNS query results to improve performance by avoiding repeated lookups for the same queries. Each cache entry stores the results for a unique DNS query (hostname + record type combination).
+
+**Parameters:**
+- `size` (BIGINT): The maximum number of cached DNS queries (must be greater than 0)
+
+**Returns:** VARCHAR - A success or error message
+
+**Default:** 4096 cached queries
+
+**Examples:**
+```sql
+-- Set cache size to 8192 for larger workloads
+SELECT set_dns_cache_size(8192);
+-- Returns: DNS cache size updated to 8192
+
+-- Set cache size to 2048 for smaller memory footprint
+SELECT set_dns_cache_size(2048);
+-- Returns: DNS cache size updated to 2048
+
+-- All subsequent DNS lookups use the new cache size
+SELECT dns_lookup('example.com');
+SELECT reverse_dns_lookup('8.8.8.8');
+```
+
+**Note:** Changing the cache size rebuilds the resolver and clears the existing cache. This operation takes effect immediately for all subsequent DNS queries. The cache respects DNS record TTLs and automatically evicts expired entries.
 
 ### `corey(hostname)` - Table Function
 

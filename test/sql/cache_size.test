@@ -1,0 +1,85 @@
+# name: test/sql/cache_size.test
+# description: test DNS cache size configuration
+# group: [dns]
+
+require dns
+
+# Test 1: Set cache size to 2048
+query I
+SELECT set_dns_cache_size(2048);
+----
+DNS cache size updated to 2048
+
+# Test 2: Verify DNS lookups still work after cache size change
+query I
+SELECT dns_lookup('google.com') IS NOT NULL;
+----
+true
+
+# Test 3: Set cache size to 8192
+query I
+SELECT set_dns_cache_size(8192);
+----
+DNS cache size updated to 8192
+
+# Test 4: Verify DNS lookups still work after another cache size change
+query I
+SELECT dns_lookup('github.com') IS NOT NULL;
+----
+true
+
+# Test 5: Set cache size to a smaller value (1024)
+query I
+SELECT set_dns_cache_size(1024);
+----
+DNS cache size updated to 1024
+
+# Test 6: Verify DNS lookups still work with smaller cache
+query I
+SELECT dns_lookup('cloudflare.com') IS NOT NULL;
+----
+true
+
+# Test 7: Invalid cache size (0) should return error
+query I
+SELECT set_dns_cache_size(0);
+----
+Cache size must be greater than 0
+
+# Test 8: Invalid cache size (negative) should return error
+query I
+SELECT set_dns_cache_size(-100);
+----
+Cache size must be greater than 0
+
+# Test 9: Set cache size to default (4096)
+query I
+SELECT set_dns_cache_size(4096);
+----
+DNS cache size updated to 4096
+
+# Test 10: Verify combined config and cache size changes work
+statement ok
+SELECT set_dns_config('google');
+
+query I
+SELECT set_dns_cache_size(2048);
+----
+DNS cache size updated to 2048
+
+# Test 11: Verify DNS still works after both config and cache size changes
+query I
+SELECT dns_lookup('google.com') IS NOT NULL;
+----
+true
+
+# Test 12: Reset to default config
+statement ok
+SELECT set_dns_config('default');
+
+# Test 13: Reset to default cache size
+query I
+SELECT set_dns_cache_size(4096);
+----
+DNS cache size updated to 4096
+

@@ -2,7 +2,7 @@
 
 ## Test Environment
 - **Platform**: macOS ARM64 (Apple Silicon)
-- **DuckDB Version**: v1.4.1
+- **DuckDB Version**: v1.4.2
 - **Extension Version**: 0.2.0
 - **Resolver Implementation**: hickory-resolver 0.25 with arc-swap
 - **Synchronization**: Lock-free atomic operations (ArcSwap)

@@ -94,15 +94,15 @@ Key implementation details:
 - The vectorized C functions process entire input batches for performance using concurrent async operations
 
 ### Dependencies
-- `duckdb` (v1.4.1) with "vtab-loadable" and "vscalar" features
-- `duckdb-loadable-macros` (v0.1.10) for entry point macros
-- `libduckdb-sys` (v1.4.1) with "loadable-extension" feature
+- `duckdb` (v1.4.2) with "vtab-loadable" and "vscalar" features
+- `duckdb-loadable-macros` (v0.1.12) for entry point macros
+- `libduckdb-sys` (v1.4.2) with "loadable-extension" feature
 - `tokio` (v1.42) with "rt", "net", "macros", and "rt-multi-thread" features (for async DNS resolution)
 - `hickory-resolver` (v0.25) for DNS lookups (successor to `trust-dns-resolver`)
 - `futures` (v0.3) for async utilities
 
 ### Configuration
-- **DuckDB target version**: v1.4.1 (defined in Makefile)
+- **DuckDB target version**: v1.4.2 (defined in Makefile)
 - **Uses unstable C API**: Yes (`USE_UNSTABLE_C_API=1` in Makefile)
 - **Extension name**: "dns" (Makefile and Cargo.toml)
 - **Rust edition**: 2021

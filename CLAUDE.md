@@ -94,15 +94,18 @@ Key implementation details:
 - The vectorized C functions process entire input batches for performance using concurrent async operations
 
 ### Dependencies
-- `duckdb` (v1.4.2) with "vtab-loadable" and "vscalar" features
-- `duckdb-loadable-macros` (v0.1.12) for entry point macros
-- `libduckdb-sys` (v1.4.2) with "loadable-extension" feature
-- `tokio` (v1.42) with "rt", "net", "macros", and "rt-multi-thread" features (for async DNS resolution)
+- `duckdb` (v1.4.3) with "vtab-loadable" and "vscalar" features
+- `duckdb-loadable-macros` (v0.1.13) for entry point macros
+- `libduckdb-sys` (v1.4.3) with "loadable-extension" feature
+- `tokio` (v1.47) with "rt", "net", "macros", "rt-multi-thread", and "sync" features (for async DNS resolution)
 - `hickory-resolver` (v0.25) for DNS lookups (successor to `trust-dns-resolver`)
+- `hickory-proto` (v0.25) for DNS protocol types
 - `futures` (v0.3) for async utilities
+- `once_cell` (v1.21) for lazy initialization
+- `arc-swap` (v1.7) for atomic reference counting
 
 ### Configuration
-- **DuckDB target version**: v1.4.2 (defined in Makefile)
+- **DuckDB target version**: v1.4.3 (defined in Makefile)
 - **Uses unstable C API**: Yes (`USE_UNSTABLE_C_API=1` in Makefile)
 - **Extension name**: "dns" (Makefile and Cargo.toml)
 - **Rust edition**: 2021
@@ -123,7 +126,7 @@ SELECT reverse_dns_lookup('8.8.8.8');
 
 ## CI/CD
 
-The project uses DuckDB's extension-ci-tools (v1.4.0) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
+The project uses DuckDB's extension-ci-tools (v1.4.3) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
 
 The workflow is defined in `.github/workflows/MainDistributionPipeline.yml`.
 

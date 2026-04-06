@@ -1,6 +1,6 @@
 [package]
 name = "dns"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [lib]
@@ -11,8 +11,8 @@ lto = true
 strip = true
 
 [dependencies]
-duckdb = { version = "1.10500.0", features = ["vtab-loadable", "vscalar"] }
-libduckdb-sys = { version = "1.10500.0", features = ["loadable-extension"] }
+duckdb = { version = "1.10501.0", features = ["vtab-loadable", "vscalar"] }
+libduckdb-sys = { version = "1.10501.0", features = ["loadable-extension"] }
 tokio = { version = "1.50", features = ["rt", "net", "macros", "rt-multi-thread", "sync"] }
 hickory-resolver = "0.25.2"
 hickory-proto = "0.25.2"

@@ -10,6 +10,7 @@ USE_UNSTABLE_C_API=1
 
 # Target DuckDB version
 TARGET_DUCKDB_VERSION=v1.5.2
+DUCKDB_TEST_VERSION?=$(patsubst v%,%,$(TARGET_DUCKDB_VERSION))
 
 all: configure debug
 

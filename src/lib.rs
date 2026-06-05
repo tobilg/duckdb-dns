@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     duckdb_entrypoint_c_api,
@@ -6,27 +7,24 @@ use duckdb::{
     vtab::{arrow::WritableVector, BindInfo, InitInfo, TableFunctionInfo, VTab},
     Connection, Result,
 };
+use hickory_proto::rr::RecordType;
+use hickory_resolver::config::*;
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::Resolver;
 use libduckdb_sys::duckdb_string_t;
+use once_cell::sync::Lazy;
 use std::{
     error::Error,
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
     sync::Arc,
 };
-use hickory_proto::rr::RecordType;
-use hickory_resolver::config::*;
-use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::Resolver;
-use once_cell::sync::Lazy;
-use arc_swap::ArcSwap;
 
 /// Global DNS resolver state shared across all function invocations
 ///
 /// This allows all DNS functions to share the same resolver instance,
 /// enabling DNS query caching and dynamic configuration updates.
-static GLOBAL_DNS_STATE: Lazy<DnsResolverState> = Lazy::new(|| {
-    DnsResolverState::default()
-});
+static GLOBAL_DNS_STATE: Lazy<DnsResolverState> = Lazy::new(|| DnsResolverState::default());
 
 /// Shared state for DNS resolver functions
 ///
@@ -37,38 +35,36 @@ static GLOBAL_DNS_STATE: Lazy<DnsResolverState> = Lazy::new(|| {
 /// The cache size determines how many DNS query results are cached.
 struct DnsResolverState {
     runtime: tokio::runtime::Runtime,
-    resolver: ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: ArcSwap<Resolver<TokioRuntimeProvider>>,
+    current_config: ArcSwap<ResolverConfig>,
     concurrency_semaphore: ArcSwap<Arc<tokio::sync::Semaphore>>,
-    cache_size: ArcSwap<usize>,
+    cache_size: ArcSwap<u64>,
 }
 
 impl Default for DnsResolverState {
     /// Creates a new DnsResolverState with a Tokio runtime and DNS resolver
     fn default() -> Self {
-        let runtime = tokio::runtime::Runtime::new()
-            .expect("Failed to create Tokio runtime");
-        
+        let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
         // Default cache size of 4096 entries
         let cache_size = 4096;
-        let mut opts = ResolverOpts::default();
+        let (config, mut opts) = Self::default_config_and_options();
         opts.cache_size = cache_size;
-        
+
         let resolver = ArcSwap::from_pointee(
-            Resolver::builder_with_config(
-                ResolverConfig::default(),
-                TokioConnectionProvider::default(),
-            )
-            .with_options(opts)
-            .build()
+            Resolver::builder_with_config(config.clone(), TokioRuntimeProvider::default())
+                .with_options(opts)
+                .build()
+                .expect("Failed to create DNS resolver"),
         );
-        let concurrency_semaphore = ArcSwap::from_pointee(
-            Arc::new(tokio::sync::Semaphore::new(50))
-        );
+        let concurrency_semaphore =
+            ArcSwap::from_pointee(Arc::new(tokio::sync::Semaphore::new(50)));
         let cache_size_atomic = ArcSwap::from_pointee(cache_size);
-        
-        DnsResolverState { 
-            runtime, 
-            resolver, 
+
+        DnsResolverState {
+            runtime,
+            resolver,
+            current_config: ArcSwap::from_pointee(config),
             concurrency_semaphore,
             cache_size: cache_size_atomic,
         }
@@ -81,26 +77,46 @@ impl DnsResolverState {
         Ok(Self::default())
     }
 
+    fn default_config_and_options() -> (ResolverConfig, ResolverOpts) {
+        hickory_resolver::system_conf::read_system_conf().unwrap_or_else(|_| {
+            (
+                ResolverConfig::udp_and_tcp(&GOOGLE),
+                ResolverOpts::default(),
+            )
+        })
+    }
+
     /// Updates the resolver configuration
     ///
     /// Creates a new resolver with the specified configuration and atomically
     /// replaces the existing resolver. This clears the DNS cache.
     /// This operation is lock-free and extremely fast.
     fn update_config(&self, config: ResolverConfig) -> std::result::Result<(), Box<dyn Error>> {
+        self.update_config_with_options(config, ResolverOpts::default())
+    }
+
+    fn update_default_config(&self) -> std::result::Result<(), Box<dyn Error>> {
+        let (config, opts) = Self::default_config_and_options();
+        self.update_config_with_options(config, opts)
+    }
+
+    fn update_config_with_options(
+        &self,
+        config: ResolverConfig,
+        mut opts: ResolverOpts,
+    ) -> std::result::Result<(), Box<dyn Error>> {
         // Use the stored cache size preference
         let cache_size = **self.cache_size.load();
-        let mut opts = ResolverOpts::default();
         opts.cache_size = cache_size;
-        
-        let new_resolver = Resolver::builder_with_config(
-            config,
-            TokioConnectionProvider::default(),
-        )
-        .with_options(opts)
-        .build();
+
+        let new_resolver =
+            Resolver::builder_with_config(config.clone(), TokioRuntimeProvider::default())
+                .with_options(opts)
+                .build()?;
 
         // Atomic swap - lock-free operation
         self.resolver.store(Arc::new(new_resolver));
+        self.current_config.store(Arc::new(config));
         Ok(())
     }
 
@@ -123,26 +139,26 @@ impl DnsResolverState {
     /// Creates a new resolver with the specified cache size and atomically
     /// replaces the existing resolver. This clears the DNS cache.
     /// This operation is lock-free and extremely fast.
-    fn set_dns_cache_size(&self, size: usize) -> std::result::Result<(), Box<dyn Error>> {
+    fn set_dns_cache_size(&self, size: u64) -> std::result::Result<(), Box<dyn Error>> {
         if size == 0 {
             return Err("Cache size must be greater than 0".into());
         }
-        
+
         // Store the new cache size preference
         self.cache_size.store(Arc::new(size));
-        
+
         // Get the current config and rebuild resolver with new cache size
-        let current_config = self.resolver.load().config().clone();
+        let current_config = self.current_config.load_full();
         let mut opts = self.resolver.load().options().clone();
         opts.cache_size = size;
-        
+
         let new_resolver = Resolver::builder_with_config(
-            current_config,
-            TokioConnectionProvider::default(),
+            current_config.as_ref().clone(),
+            TokioRuntimeProvider::default(),
         )
         .with_options(opts)
-        .build();
-        
+        .build()?;
+
         // Atomic swap - existing queries continue with old resolver
         self.resolver.store(Arc::new(new_resolver));
         Ok(())
@@ -174,7 +190,7 @@ fn validate_ipv4(ip_str: &str) -> std::result::Result<Ipv4Addr, Box<dyn Error>> 
 /// * `Ok(String)` - The resolved hostname
 /// * `Err` - Lookup failed or invalid IP address
 async fn reverse_dns_lookup_async(
-    resolver: &ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     ip_str: &str,
 ) -> std::result::Result<String, Box<dyn Error>> {
     let ipv4 = validate_ipv4(ip_str)?;
@@ -186,8 +202,8 @@ async fn reverse_dns_lookup_async(
     match resolver_guard.reverse_lookup(ip_addr).await {
         Ok(lookup) => {
             // Get the first hostname from the lookup result
-            if let Some(name) = lookup.iter().next() {
-                Ok(name.to_string().trim_end_matches('.').to_string())
+            if let Some(record) = lookup.answers().first() {
+                Ok(record.data.to_string().trim_end_matches('.').to_string())
             } else {
                 Err("No hostname found for IP address".into())
             }
@@ -206,7 +222,7 @@ async fn reverse_dns_lookup_async(
 /// * `Ok(String)` - The first IPv4 address found
 /// * `Err` - No IPv4 addresses found or lookup failed
 async fn dns_lookup_async(
-    resolver: &ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     hostname: &str,
 ) -> std::result::Result<String, Box<dyn Error>> {
     let hostname = hostname.trim();
@@ -238,7 +254,7 @@ async fn dns_lookup_async(
 /// * `Ok(Vec<String>)` - All IPv4 addresses found
 /// * `Err` - No IPv4 addresses found or lookup failed
 async fn dns_lookup_all_async(
-    resolver: &ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     hostname: &str,
 ) -> std::result::Result<Vec<String>, Box<dyn Error>> {
     let hostname = hostname.trim();
@@ -310,7 +326,7 @@ fn parse_record_type(record_type_str: &str) -> std::result::Result<RecordType, B
 /// * `Ok(String)` - The first record of the specified type
 /// * `Err` - No records found or lookup failed
 async fn dns_lookup_with_type_async(
-    resolver: &ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     hostname: &str,
     record_type: RecordType,
 ) -> std::result::Result<String, Box<dyn Error>> {
@@ -321,8 +337,8 @@ async fn dns_lookup_with_type_async(
 
     match resolver_guard.lookup(hostname, record_type).await {
         Ok(lookup) => {
-            if let Some(record) = lookup.record_iter().next() {
-                Ok(record.data().to_string())
+            if let Some(record) = lookup.answers().first() {
+                Ok(record.data.to_string())
             } else {
                 Err(format!("No {} records found for hostname", record_type).into())
             }
@@ -342,7 +358,7 @@ async fn dns_lookup_with_type_async(
 /// * `Ok(Vec<String>)` - All records of the specified type
 /// * `Err` - No records found or lookup failed
 async fn dns_lookup_all_with_type_async(
-    resolver: &ArcSwap<Resolver<TokioConnectionProvider>>,
+    resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     hostname: &str,
     record_type: RecordType,
 ) -> std::result::Result<Vec<String>, Box<dyn Error>> {
@@ -354,8 +370,9 @@ async fn dns_lookup_all_with_type_async(
     match resolver_guard.lookup(hostname, record_type).await {
         Ok(lookup) => {
             let records: Vec<String> = lookup
-                .record_iter()
-                .map(|record| record.data().to_string())
+                .answers()
+                .iter()
+                .map(|record| record.data.to_string())
                 .collect();
 
             if records.is_empty() {
@@ -428,7 +445,9 @@ impl VScalar for ReverseDnsLookup {
             })
             .collect();
 
-        let results = GLOBAL_DNS_STATE.runtime.block_on(async { futures::future::join_all(futures).await });
+        let results = GLOBAL_DNS_STATE
+            .runtime
+            .block_on(async { futures::future::join_all(futures).await });
 
         // Write results to output
         for (i, result) in results.into_iter().take(size) {
@@ -545,7 +564,8 @@ impl VScalar for DnsLookup {
                         let result = if let Some(record_type_str) = record_type_opt {
                             match parse_record_type(&record_type_str) {
                                 Ok(record_type) => {
-                                    dns_lookup_with_type_async(resolver, &hostname, record_type).await
+                                    dns_lookup_with_type_async(resolver, &hostname, record_type)
+                                        .await
                                 }
                                 Err(e) => Err(e),
                             }
@@ -558,7 +578,9 @@ impl VScalar for DnsLookup {
             })
             .collect();
 
-        let results = GLOBAL_DNS_STATE.runtime.block_on(async { futures::future::join_all(futures).await });
+        let results = GLOBAL_DNS_STATE
+            .runtime
+            .block_on(async { futures::future::join_all(futures).await });
 
         // Write results to output
         for (i, result) in results.into_iter().take(size) {
@@ -684,7 +706,8 @@ impl VScalar for DnsLookupAll {
                         let result = if let Some(record_type_str) = record_type_opt {
                             match parse_record_type(&record_type_str) {
                                 Ok(record_type) => {
-                                    dns_lookup_all_with_type_async(resolver, &hostname, record_type).await
+                                    dns_lookup_all_with_type_async(resolver, &hostname, record_type)
+                                        .await
                                 }
                                 Err(e) => Err(e),
                             }
@@ -697,10 +720,15 @@ impl VScalar for DnsLookupAll {
             })
             .collect();
 
-        let all_results = GLOBAL_DNS_STATE.runtime.block_on(async { futures::future::join_all(futures).await });
+        let all_results = GLOBAL_DNS_STATE
+            .runtime
+            .block_on(async { futures::future::join_all(futures).await });
 
         // Calculate total number of records for capacity
-        let total_capacity: usize = all_results.iter().map(|r| r.as_ref().map_or(0, |v| v.len())).sum();
+        let total_capacity: usize = all_results
+            .iter()
+            .map(|r| r.as_ref().map_or(0, |v| v.len()))
+            .sum();
 
         // Get the child vector with appropriate capacity
         let child_vector = output_vector.child(total_capacity);
@@ -793,14 +821,20 @@ impl VScalar for SetDnsConfig {
                 continue;
             }
 
-            let preset = DuckString::new(&mut { values[i] }).as_str().trim().to_lowercase();
+            let preset = DuckString::new(&mut { values[i] })
+                .as_str()
+                .trim()
+                .to_lowercase();
 
-            // Determine which configuration to use
-            let config = match preset.as_str() {
-                "default" => ResolverConfig::default(),
-                "google" => ResolverConfig::google(),
-                "cloudflare" => ResolverConfig::cloudflare(),
-                "quad9" => ResolverConfig::quad9(),
+            // Update the global resolver configuration
+            // This is a lock-free atomic operation - extremely fast!
+            let update_result = match preset.as_str() {
+                "default" => GLOBAL_DNS_STATE.update_default_config(),
+                "google" => GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&GOOGLE)),
+                "cloudflare" => {
+                    GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&CLOUDFLARE))
+                }
+                "quad9" => GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&QUAD9)),
                 _ => {
                     let error_msg = format!("Unknown preset '{}'. Supported presets: default, google, cloudflare, quad9", preset);
                     output_vector.insert(i, &error_msg);
@@ -808,9 +842,7 @@ impl VScalar for SetDnsConfig {
                 }
             };
 
-            // Update the global resolver configuration
-            // This is a lock-free atomic operation - extremely fast!
-            match GLOBAL_DNS_STATE.update_config(config) {
+            match update_result {
                 Ok(_) => {
                     let success_msg = format!("DNS configuration updated to '{}'", preset);
                     output_vector.insert(i, &success_msg);
@@ -978,7 +1010,7 @@ impl VScalar for SetDnsCacheSize {
 
             // Update the global cache size
             // This is a lock-free atomic operation - extremely fast!
-            match GLOBAL_DNS_STATE.set_dns_cache_size(cache_size as usize) {
+            match GLOBAL_DNS_STATE.set_dns_cache_size(cache_size as u64) {
                 Ok(_) => {
                     let success_msg = format!("DNS cache size updated to {}", cache_size);
                     output_vector.insert(i, &success_msg);
@@ -1054,7 +1086,10 @@ impl VTab for Corey {
 
     fn bind(bind: &BindInfo) -> std::result::Result<Self::BindData, Box<dyn Error>> {
         // Add result column for TXT records
-        bind.add_result_column("txt_record", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column(
+            "txt_record",
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        );
 
         // Get hostname parameter
         let hostname = bind.get_parameter(0).to_string();
@@ -1066,11 +1101,15 @@ impl VTab for Corey {
         let txt_records = resolver_state.runtime.block_on(async {
             // Lock-free load of the current resolver
             let resolver_guard = resolver_state.resolver.load();
-            match resolver_guard.lookup(hostname.trim(), RecordType::TXT).await {
+            match resolver_guard
+                .lookup(hostname.trim(), RecordType::TXT)
+                .await
+            {
                 Ok(lookup) => {
                     let records: Vec<String> = lookup
-                        .record_iter()
-                        .map(|record| record.data().to_string())
+                        .answers()
+                        .iter()
+                        .map(|record| record.data.to_string())
                         .collect();
                     Ok(records)
                 }
@@ -1098,9 +1137,7 @@ impl VTab for Corey {
         let bind_data = func.get_bind_data();
         let init_data = func.get_init_data();
 
-        let offset = init_data
-            .offset
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let offset = init_data.offset.load(std::sync::atomic::Ordering::Relaxed);
         let remaining = bind_data.txt_records.len().saturating_sub(offset);
 
         if remaining == 0 {

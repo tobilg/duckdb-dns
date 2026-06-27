@@ -37,6 +37,7 @@ struct DnsResolverState {
     runtime: tokio::runtime::Runtime,
     resolver: ArcSwap<Resolver<TokioRuntimeProvider>>,
     current_config: ArcSwap<ResolverConfig>,
+    current_opts: ArcSwap<ResolverOpts>,
     concurrency_semaphore: ArcSwap<Arc<tokio::sync::Semaphore>>,
     cache_size: ArcSwap<u64>,
 }
@@ -53,7 +54,7 @@ impl Default for DnsResolverState {
 
         let resolver = ArcSwap::from_pointee(
             Resolver::builder_with_config(config.clone(), TokioRuntimeProvider::default())
-                .with_options(opts)
+                .with_options(opts.clone())
                 .build()
                 .expect("Failed to create DNS resolver"),
         );
@@ -65,6 +66,7 @@ impl Default for DnsResolverState {
             runtime,
             resolver,
             current_config: ArcSwap::from_pointee(config),
+            current_opts: ArcSwap::from_pointee(opts),
             concurrency_semaphore,
             cache_size: cache_size_atomic,
         }
@@ -111,12 +113,13 @@ impl DnsResolverState {
 
         let new_resolver =
             Resolver::builder_with_config(config.clone(), TokioRuntimeProvider::default())
-                .with_options(opts)
+                .with_options(opts.clone())
                 .build()?;
 
         // Atomic swap - lock-free operation
         self.resolver.store(Arc::new(new_resolver));
         self.current_config.store(Arc::new(config));
+        self.current_opts.store(Arc::new(opts));
         Ok(())
     }
 
@@ -149,18 +152,19 @@ impl DnsResolverState {
 
         // Get the current config and rebuild resolver with new cache size
         let current_config = self.current_config.load_full();
-        let mut opts = self.resolver.load().options().clone();
+        let mut opts = self.current_opts.load().as_ref().clone();
         opts.cache_size = size;
 
         let new_resolver = Resolver::builder_with_config(
             current_config.as_ref().clone(),
             TokioRuntimeProvider::default(),
         )
-        .with_options(opts)
+        .with_options(opts.clone())
         .build()?;
 
         // Atomic swap - existing queries continue with old resolver
         self.resolver.store(Arc::new(new_resolver));
+        self.current_opts.store(Arc::new(opts));
         Ok(())
     }
 }
@@ -405,7 +409,7 @@ struct ReverseDnsLookup;
 impl VScalar for ReverseDnsLookup {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -415,7 +419,7 @@ impl VScalar for ReverseDnsLookup {
         let mut output_vector = output.flat_vector();
 
         // Get input strings
-        let values = input_vector.as_slice_with_len::<duckdb_string_t>(size);
+        let values = unsafe { input_vector.as_slice_with_len::<duckdb_string_t>(size) };
         let strings: Vec<String> = values
             .iter()
             .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
@@ -504,7 +508,7 @@ struct DnsLookup;
 impl VScalar for DnsLookup {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -514,7 +518,7 @@ impl VScalar for DnsLookup {
         let mut output_vector = output.flat_vector();
 
         // Get hostname strings
-        let hostname_values = hostname_vector.as_slice_with_len::<duckdb_string_t>(size);
+        let hostname_values = unsafe { hostname_vector.as_slice_with_len::<duckdb_string_t>(size) };
         let hostnames: Vec<String> = hostname_values
             .iter()
             .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
@@ -523,7 +527,8 @@ impl VScalar for DnsLookup {
         // Check if we have a second parameter (record_type)
         let record_types: Option<Vec<Option<String>>> = if input.num_columns() > 1 {
             let record_type_vector = input.flat_vector(1);
-            let record_type_values = record_type_vector.as_slice_with_len::<duckdb_string_t>(size);
+            let record_type_values =
+                unsafe { record_type_vector.as_slice_with_len::<duckdb_string_t>(size) };
             Some(
                 (0..size)
                     .map(|i| {
@@ -646,7 +651,7 @@ struct DnsLookupAll;
 impl VScalar for DnsLookupAll {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -656,7 +661,7 @@ impl VScalar for DnsLookupAll {
         let mut output_vector = output.list_vector();
 
         // Get hostname strings
-        let hostname_values = hostname_vector.as_slice_with_len::<duckdb_string_t>(size);
+        let hostname_values = unsafe { hostname_vector.as_slice_with_len::<duckdb_string_t>(size) };
         let hostnames: Vec<String> = hostname_values
             .iter()
             .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
@@ -665,7 +670,8 @@ impl VScalar for DnsLookupAll {
         // Check if we have a second parameter (record_type)
         let record_types: Option<Vec<Option<String>>> = if input.num_columns() > 1 {
             let record_type_vector = input.flat_vector(1);
-            let record_type_values = record_type_vector.as_slice_with_len::<duckdb_string_t>(size);
+            let record_type_values =
+                unsafe { record_type_vector.as_slice_with_len::<duckdb_string_t>(size) };
             Some(
                 (0..size)
                     .map(|i| {
@@ -803,7 +809,7 @@ struct SetDnsConfig;
 impl VScalar for SetDnsConfig {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -813,7 +819,7 @@ impl VScalar for SetDnsConfig {
         let mut output_vector = output.flat_vector();
 
         // Get input strings
-        let values = input_vector.as_slice_with_len::<duckdb_string_t>(size);
+        let values = unsafe { input_vector.as_slice_with_len::<duckdb_string_t>(size) };
 
         for i in 0..size {
             if input_vector.row_is_null(i as u64) {
@@ -901,7 +907,7 @@ struct SetConcurrencyLimit;
 impl VScalar for SetConcurrencyLimit {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -911,7 +917,7 @@ impl VScalar for SetConcurrencyLimit {
         let mut output_vector = output.flat_vector();
 
         // Get input values
-        let values = input_vector.as_slice_with_len::<i64>(size);
+        let values = unsafe { input_vector.as_slice_with_len::<i64>(size) };
 
         for i in 0..size {
             if input_vector.row_is_null(i as u64) {
@@ -982,7 +988,7 @@ struct SetDnsCacheSize;
 impl VScalar for SetDnsCacheSize {
     type State = ();
 
-    unsafe fn invoke(
+    fn invoke(
         _state: &Self::State,
         input: &mut DataChunkHandle,
         output: &mut dyn WritableVector,
@@ -992,7 +998,7 @@ impl VScalar for SetDnsCacheSize {
         let mut output_vector = output.flat_vector();
 
         // Get input values
-        let values = input_vector.as_slice_with_len::<i64>(size);
+        let values = unsafe { input_vector.as_slice_with_len::<i64>(size) };
 
         for i in 0..size {
             if input_vector.row_is_null(i as u64) {

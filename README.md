@@ -523,7 +523,9 @@ All functions:
 
 ## CI/CD
 
-The project uses DuckDB's extension-ci-tools (v1.4.0) for automated builds across multiple platforms via GitHub Actions.
+The project uses DuckDB's extension-ci-tools for automated builds across multiple platforms via GitHub Actions.
+
+`.github/workflows/UpdateDuckDB.yml` checks weekly for a new `duckdb` crate release and opens a PR bumping the crates, `TARGET_DUCKDB_VERSION`, the `extension-ci-tools` submodule and the extension version. PRs opened with the default `GITHUB_TOKEN` don't trigger CI; add an `UPDATE_PR_TOKEN` secret (PAT with `contents` + `pull-requests` write) to get CI runs on them.
 
 ## License
 

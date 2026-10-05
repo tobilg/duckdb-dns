@@ -1,0 +1,84 @@
+#
+# Weekly check for a new duckdb Rust crate release and open a PR bumping DuckDB everywhere
+#
+name: Update DuckDB
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Detect versions
+        id: v
+        run: |
+          crate=$(curl -sf -A 'duckdb-dns-updater' https://crates.io/api/v1/crates/duckdb | jq -r '.crate.max_stable_version')
+          current=$(grep -oP '^duckdb = \{ version = "\K[^"]+' Cargo.toml)
+          # crate 1.10506.0 -> DuckDB v1.5.6
+          n=$(echo "$crate" | cut -d. -f2)
+          duckdb="v$((n / 10000)).$((n / 100 % 100)).$((n % 100))"
+          old_duckdb=$(grep -oP '^TARGET_DUCKDB_VERSION=\K.+' Makefile)
+          echo "crate=$crate current=$current duckdb=$duckdb old_duckdb=$old_duckdb"
+          echo "crate=$crate" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "duckdb=$duckdb" >> "$GITHUB_OUTPUT"
+          echo "old_duckdb=$old_duckdb" >> "$GITHUB_OUTPUT"
+          if [ "$crate" != "$current" ]; then echo "update=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Bump versions
+        if: steps.v.outputs.update == 'true'
+        env:
+          CRATE: ${{ steps.v.outputs.crate }}
+          CURRENT: ${{ steps.v.outputs.current }}
+          DUCKDB: ${{ steps.v.outputs.duckdb }}
+          OLD_DUCKDB: ${{ steps.v.outputs.old_duckdb }}
+        run: |
+          sed -i "s/\"$CURRENT\"/\"$CRATE\"/g" Cargo.toml
+          sed -i "s/^TARGET_DUCKDB_VERSION=.*/TARGET_DUCKDB_VERSION=$DUCKDB/" Makefile
+
+          # Bump extension patch version
+          ext=$(grep -oP '^version = "\K[^"]+' Cargo.toml | head -1)
+          new_ext="${ext%.*}.$(( ${ext##*.} + 1 ))"
+          sed -i "0,/^version = \"$ext\"/s//version = \"$new_ext\"/" Cargo.toml
+          echo "NEW_EXT=$new_ext" >> "$GITHUB_ENV"
+
+          # New minor release: point CI workflow + submodule at the release branch
+          if [ "${DUCKDB%.*}" != "${OLD_DUCKDB%.*}" ]; then
+            sed -i -E "s/@v1\.[0-9]+[-.][A-Za-z0-9.]+/@$DUCKDB/; s/(duckdb_version|ci_tools_version): v.*/\1: $DUCKDB/" .github/workflows/MainDistributionPipeline.yml
+            git config -f .gitmodules submodule.extension-ci-tools.branch "$DUCKDB"
+          fi
+
+          # Move extension-ci-tools to the matching release branch
+          git -C extension-ci-tools fetch --depth 1 origin "$DUCKDB"
+          git -C extension-ci-tools checkout FETCH_HEAD
+
+          cargo update -p duckdb -p libduckdb-sys -p dns
+
+      - name: Open PR
+        if: steps.v.outputs.update == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # PRs opened with GITHUB_TOKEN don't trigger CI; set UPDATE_PR_TOKEN (PAT) to get CI runs
+          token: ${{ secrets.UPDATE_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: update-duckdb-${{ steps.v.outputs.duckdb }}
+          title: Update DuckDB to ${{ steps.v.outputs.duckdb }}
+          commit-message: Update DuckDB to ${{ steps.v.outputs.duckdb }}
+          body: |
+            Automated bump:
+            - `duckdb` / `libduckdb-sys` crates → `${{ steps.v.outputs.crate }}`
+            - `TARGET_DUCKDB_VERSION` → `${{ steps.v.outputs.duckdb }}`
+            - `extension-ci-tools` submodule → `${{ steps.v.outputs.duckdb }}`
+            - extension version → `${{ env.NEW_EXT }}`
+
+            After merge, bump `ref` in duckdb/community-extensions `extensions/dns/description.yml`.
+          delete-branch: true

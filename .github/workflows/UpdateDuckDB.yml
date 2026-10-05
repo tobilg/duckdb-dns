@@ -15,7 +15,7 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: true
 
@@ -66,9 +66,9 @@ jobs:
 
       - name: Open PR
         if: steps.v.outputs.update == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
-          # PRs opened with GITHUB_TOKEN don't trigger CI; set UPDATE_PR_TOKEN (PAT) to get CI runs
+          # CI on PRs opened with GITHUB_TOKEN waits for manual approval; set UPDATE_PR_TOKEN (PAT) to run it automatically
           token: ${{ secrets.UPDATE_PR_TOKEN || secrets.GITHUB_TOKEN }}
           branch: update-duckdb-${{ steps.v.outputs.duckdb }}
           title: Update DuckDB to ${{ steps.v.outputs.duckdb }}

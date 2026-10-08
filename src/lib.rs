@@ -13,12 +13,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::Resolver;
 use libduckdb_sys::duckdb_string_t;
 use once_cell::sync::Lazy;
-use std::{
-    error::Error,
-    net::{IpAddr, Ipv4Addr},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{error::Error, net::IpAddr, str::FromStr, sync::Arc};
 
 /// Global DNS resolver state shared across all function invocations
 ///
@@ -169,26 +164,31 @@ impl DnsResolverState {
     }
 }
 
-/// Validates and parses an IPv4 address string
+/// Validates and parses an IPv4 or IPv6 address string
+///
+/// IPv4-mapped IPv6 addresses (e.g. `::ffff:8.8.8.8`) are converted to their
+/// IPv4 form, so they are looked up in `in-addr.arpa` rather than `ip6.arpa`.
 ///
 /// # Arguments
-/// * `ip_str` - A string slice containing an IPv4 address
+/// * `ip_str` - A string slice containing an IPv4 or IPv6 address
 ///
 /// # Returns
-/// * `Ok(Ipv4Addr)` - Successfully parsed IPv4 address
-/// * `Err` - Invalid IPv4 address format
-fn validate_ipv4(ip_str: &str) -> std::result::Result<Ipv4Addr, Box<dyn Error>> {
-    match Ipv4Addr::from_str(ip_str.trim()) {
-        Ok(addr) => Ok(addr),
-        Err(_) => Err(format!("Invalid IPv4 address format: {}", ip_str).into()),
+/// * `Ok(IpAddr)` - Successfully parsed IP address
+/// * `Err` - Invalid IP address format
+fn validate_ip(ip_str: &str) -> std::result::Result<IpAddr, Box<dyn Error>> {
+    match IpAddr::from_str(ip_str.trim()) {
+        Ok(addr) => Ok(addr.to_canonical()),
+        Err(_) => Err(format!("Invalid IP address format: {}", ip_str).into()),
     }
 }
 
-/// Performs an asynchronous reverse DNS lookup for an IPv4 address
+/// Performs an asynchronous reverse DNS lookup for an IPv4 or IPv6 address
+///
+/// Hickory builds the PTR query name (`in-addr.arpa` or `ip6.arpa`) from the address.
 ///
 /// # Arguments
 /// * `resolver` - Reference to the ArcSwap-wrapped Hickory DNS resolver
-/// * `ip_str` - String containing the IPv4 address to resolve
+/// * `ip_str` - String containing the IPv4 or IPv6 address to resolve
 ///
 /// # Returns
 /// * `Ok(String)` - The resolved hostname
@@ -197,8 +197,7 @@ async fn reverse_dns_lookup_async(
     resolver: &ArcSwap<Resolver<TokioRuntimeProvider>>,
     ip_str: &str,
 ) -> std::result::Result<String, Box<dyn Error>> {
-    let ipv4 = validate_ipv4(ip_str)?;
-    let ip_addr = IpAddr::V4(ipv4);
+    let ip_addr = validate_ip(ip_str)?;
 
     // Lock-free load of the current resolver
     let resolver_guard = resolver.load();
@@ -391,10 +390,10 @@ async fn dns_lookup_all_with_type_async(
 
 /// Reverse DNS lookup scalar function
 ///
-/// Performs reverse DNS lookups by converting IPv4 addresses to hostnames.
+/// Performs reverse DNS lookups by converting IPv4 or IPv6 addresses to hostnames.
 ///
 /// # Arguments
-/// * `ip_address` - A VARCHAR containing an IPv4 address (e.g., "8.8.8.8")
+/// * `ip_address` - A VARCHAR containing an IPv4 or IPv6 address (e.g., "8.8.8.8" or "2001:4860:4860::8888")
 ///
 /// # Returns
 /// * VARCHAR - The resolved hostname (e.g., "dns.google"), or NULL on error
@@ -402,6 +401,8 @@ async fn dns_lookup_all_with_type_async(
 /// # Example
 /// ```sql
 /// SELECT reverse_dns_lookup('8.8.8.8') as hostname;
+/// -- Returns: dns.google
+/// SELECT reverse_dns_lookup('2001:4860:4860::8888') as hostname;
 /// -- Returns: dns.google
 /// ```
 struct ReverseDnsLookup;

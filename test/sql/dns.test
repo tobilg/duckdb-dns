@@ -22,6 +22,41 @@ SELECT reverse_dns_lookup('8.8.8.8');
 ----
 dns.google
 
+# Test reverse DNS lookup with Google's IPv6 DNS server
+query I
+SELECT reverse_dns_lookup('2001:4860:4860::8888');
+----
+dns.google
+
+# Test reverse DNS lookup with Cloudflare's IPv6 DNS server
+query I
+SELECT reverse_dns_lookup('2606:4700:4700::1111');
+----
+one.one.one.one
+
+# Test IPv4-mapped IPv6 address (looked up as its IPv4 address)
+query I
+SELECT reverse_dns_lookup('::ffff:8.8.8.8');
+----
+dns.google
+
+# Test reverse DNS lookup trims surrounding whitespace for IPv6
+query I
+SELECT reverse_dns_lookup(' 2001:4860:4860::8888 ');
+----
+dns.google
+
+# Test invalid IPv6 addresses (should return NULL)
+query I
+SELECT reverse_dns_lookup('2001:4860:4860::8888::1') IS NULL;
+----
+true
+
+query I
+SELECT reverse_dns_lookup('gggg::1') IS NULL;
+----
+true
+
 # Test DNS lookup for google.com (should return an IP address)
 query I
 SELECT dns_lookup('google.com') IS NOT NULL;

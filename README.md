@@ -5,7 +5,7 @@ A DuckDB extension for performing DNS lookups and reverse DNS lookups, written i
 ## Features
 
 - **Forward DNS Lookup**: Resolve hostnames to IPv4 addresses or other DNS record types
-- **Reverse DNS Lookup**: Resolve IPv4 addresses to hostnames
+- **Reverse DNS Lookup**: Resolve IPv4 and IPv6 addresses to hostnames
 - **Multiple Record Types**: Query A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA records
 - **Configurable DNS Resolver**: Switch between DNS providers (Google, Cloudflare, Quad9) with instant configuration changes
 - **Configurable Concurrency Limit**: Control the number of concurrent DNS requests to prevent TCP connection exhaustion (default: 50)
@@ -86,16 +86,19 @@ SELECT unnest(dns_lookup_all('google.com', 'TXT')) as txt_record;
 
 ### `reverse_dns_lookup(ip_address)`
 
-Performs a reverse DNS lookup to resolve an IPv4 address to a hostname.
+Performs a reverse DNS lookup to resolve an IPv4 or IPv6 address to a hostname.
 
 **Parameters:**
-- `ip_address` (VARCHAR): The IPv4 address to resolve (must be valid IPv4 format)
+- `ip_address` (VARCHAR): The IPv4 or IPv6 address to resolve. IPv4-mapped IPv6 addresses (e.g. `::ffff:8.8.8.8`) are looked up as their IPv4 address.
 
 **Returns:** VARCHAR - The resolved hostname, or NULL on error
 
 **Example:**
 ```sql
 SELECT reverse_dns_lookup('8.8.8.8');
+-- Returns: dns.google
+
+SELECT reverse_dns_lookup('2001:4860:4860::8888');
 -- Returns: dns.google
 ```
 
@@ -324,8 +327,18 @@ SELECT * FROM users WHERE ip_address = dns_lookup('example.com');
 -- Look up hostname for an IP
 SELECT reverse_dns_lookup('1.1.1.1') as hostname;
 
+-- IPv6 addresses work the same way
+SELECT reverse_dns_lookup('2606:4700:4700::1111') as hostname;
+-- Returns: one.one.one.one
+
 -- Check if hostname matches
 SELECT reverse_dns_lookup('8.8.8.8') = 'dns.google' as is_google_dns;
+
+-- Round trip: resolve all IPv6 addresses of a host, then look each one up again
+SELECT
+    ip,
+    reverse_dns_lookup(ip) as hostname
+FROM (SELECT unnest(dns_lookup_all('dns.google', 'AAAA')) as ip);
 ```
 
 ### Working with Multiple Record Types
@@ -410,14 +423,15 @@ SELECT
     unnest(dns_lookup_all(domain)) as ip
 FROM (VALUES ('google.com'), ('cloudflare.com')) AS domains(domain);
 
--- Look up multiple IPs with table
+-- Look up multiple IPs (IPv4 and IPv6 can be mixed) with table
 SELECT
     ip,
     reverse_dns_lookup(ip) as hostname
 FROM (VALUES
     ('8.8.8.8'),
     ('1.1.1.1'),
-    ('208.67.222.222')
+    ('208.67.222.222'),
+    ('2001:4860:4860::8888')
 ) AS ips(ip);
 
 -- Filter NULL results (failed lookups)
@@ -457,10 +471,12 @@ make test_release  # Test release build
 
 ```shell
 make clean_all
-DUCKDB_TEST_VERSION=v1.3.2 make configure
+DUCKDB_TEST_VERSION=1.5.6 make configure
 make debug
 make test_debug
 ```
+
+Because the extension uses the unstable C API, it only loads in the exact DuckDB version it was built for, so the test version must match `TARGET_DUCKDB_VERSION`. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
 
 ## Development
 
@@ -477,7 +493,7 @@ The extension implements five scalar functions and one table function:
 
 #### Scalar Functions (using `VScalar` trait):
 
-1. **ReverseDnsLookup**: Reverse DNS lookup (IP → hostname)
+1. **ReverseDnsLookup**: Reverse DNS lookup (IPv4/IPv6 → hostname)
 2. **DnsLookup**: Forward DNS lookup (hostname → first record)
    - Without record_type: Returns first IPv4 address
    - With record_type: Returns first record of specified type
@@ -500,7 +516,7 @@ The extension implements five scalar functions and one table function:
 
 All functions:
 - Implement vectorized processing for efficiency
-- Validate input formats (IPv4 for reverse lookup)
+- Validate input formats (IPv4 or IPv6 for reverse lookup)
 - Use hickory-resolver with global cached instance for consistent resolution
 - Support multiple DNS record types: A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA
 - Return VARCHAR, VARCHAR[], or table results, or NULL on error
@@ -510,7 +526,7 @@ All functions:
 ### Configuration
 
 - **Extension Name**: `dns`
-- **DuckDB Version**: v1.4.0 (defined in Makefile)
+- **DuckDB Version**: v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
 - **Rust Edition**: 2021
 - **Uses Unstable C API**: Yes (`USE_UNSTABLE_C_API=1` in Makefile)
 - **Library Type**: cdylib (native dynamic library)
@@ -518,7 +534,7 @@ All functions:
 ## Known Issues
 
 - Extensions may fail to load on Windows with Python 3.11 (use Python 3.12)
-- IPv6 addresses are filtered out in default IP lookups (only IPv4 returned)
+- IPv6 addresses are filtered out in default forward IP lookups (only IPv4 returned; use record type `AAAA` for IPv6)
 - `dns_lookup()` without record_type returns only the first IPv4 address found (use `dns_lookup_all()` for all addresses)
 
 ## CI/CD

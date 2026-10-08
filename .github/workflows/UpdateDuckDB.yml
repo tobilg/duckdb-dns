@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -15,7 +16,14 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Scheduled workflows are disabled after 60 days without repository activity; re-enable on every run
+      - name: Keep schedule alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/UpdateDuckDB.yml/enable"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
 
@@ -25,6 +33,10 @@ jobs:
           crate=$(curl -sf -A 'duckdb-dns-updater' https://crates.io/api/v1/crates/duckdb | jq -r '.crate.max_stable_version')
           current=$(grep -oP '^duckdb = \{ version = "\K[^"]+' Cargo.toml)
           # crate 1.10506.0 -> DuckDB v1.5.6
+          if ! [[ "$crate" =~ ^[0-9]+\.[0-9]{5,}\.[0-9]+$ ]]; then
+            echo "::error::Unexpected duckdb crate version '$crate'"
+            exit 1
+          fi
           n=$(echo "$crate" | cut -d. -f2)
           duckdb="v$((n / 10000)).$((n / 100 % 100)).$((n % 100))"
           old_duckdb=$(grep -oP '^TARGET_DUCKDB_VERSION=\K.+' Makefile)
@@ -34,6 +46,14 @@ jobs:
           echo "duckdb=$duckdb" >> "$GITHUB_OUTPUT"
           echo "old_duckdb=$old_duckdb" >> "$GITHUB_OUTPUT"
           if [ "$crate" != "$current" ]; then echo "update=true" >> "$GITHUB_OUTPUT"; fi
+          # Crate-only release (e.g. 1.10503.1): DuckDB itself is unchanged
+          if [ "$duckdb" = "$old_duckdb" ]; then
+            echo "title=Update duckdb crates to $crate" >> "$GITHUB_OUTPUT"
+            echo "branch=update-duckdb-crate-$crate" >> "$GITHUB_OUTPUT"
+          else
+            echo "title=Update DuckDB to $duckdb" >> "$GITHUB_OUTPUT"
+            echo "branch=update-duckdb-$duckdb" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Bump versions
         if: steps.v.outputs.update == 'true'
@@ -54,7 +74,7 @@ jobs:
 
           # New minor release: point CI workflow + submodule at the release branch
           if [ "${DUCKDB%.*}" != "${OLD_DUCKDB%.*}" ]; then
-            sed -i -E "s/@v1\.[0-9]+[-.][A-Za-z0-9.]+/@$DUCKDB/; s/(duckdb_version|ci_tools_version): v.*/\1: $DUCKDB/" .github/workflows/MainDistributionPipeline.yml
+            sed -i -E "s/@v[0-9]+\.[0-9]+[-.][A-Za-z0-9.]+/@$DUCKDB/; s/(duckdb_version|ci_tools_version): v.*/\1: $DUCKDB/" .github/workflows/MainDistributionPipeline.yml
             git config -f .gitmodules submodule.extension-ci-tools.branch "$DUCKDB"
           fi
 
@@ -64,21 +84,31 @@ jobs:
 
           cargo update -p duckdb -p libduckdb-sys -p dns
 
+      # A failing check still opens the PR, but as a draft, since the crate API changed and src/ needs fixing
+      - name: Cargo check
+        id: check
+        if: steps.v.outputs.update == 'true'
+        continue-on-error: true
+        run: cargo check --locked
+
       - name: Open PR
         if: steps.v.outputs.update == 'true'
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           # CI on PRs opened with GITHUB_TOKEN waits for manual approval; set UPDATE_PR_TOKEN (PAT) to run it automatically
           token: ${{ secrets.UPDATE_PR_TOKEN || secrets.GITHUB_TOKEN }}
-          branch: update-duckdb-${{ steps.v.outputs.duckdb }}
-          title: Update DuckDB to ${{ steps.v.outputs.duckdb }}
-          commit-message: Update DuckDB to ${{ steps.v.outputs.duckdb }}
+          branch: ${{ steps.v.outputs.branch }}
+          title: ${{ steps.v.outputs.title }}
+          commit-message: ${{ steps.v.outputs.title }}
+          draft: ${{ steps.check.outcome == 'failure' && 'always-true' || 'false' }}
           body: |
             Automated bump:
             - `duckdb` / `libduckdb-sys` crates → `${{ steps.v.outputs.crate }}`
             - `TARGET_DUCKDB_VERSION` → `${{ steps.v.outputs.duckdb }}`
             - `extension-ci-tools` submodule → `${{ steps.v.outputs.duckdb }}`
             - extension version → `${{ env.NEW_EXT }}`
+
+            ${{ steps.check.outcome == 'failure' && '**:warning: `cargo check` failed**: the crate API likely changed, so `src/` needs fixing before this can be merged.' || '`cargo check` passed.' }}
 
             After merge, bump `ref` in duckdb/community-extensions `extensions/dns/description.yml`.
           delete-branch: true

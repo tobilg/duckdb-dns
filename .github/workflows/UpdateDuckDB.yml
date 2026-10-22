@@ -39,7 +39,7 @@ jobs:
           fi
           n=$(echo "$crate" | cut -d. -f2)
           duckdb="v$((n / 10000)).$((n / 100 % 100)).$((n % 100))"
-          old_duckdb=$(grep -oP '^TARGET_DUCKDB_VERSION=\K.+' Makefile)
+          old_duckdb=v$(grep -oP '^DUCKDB_TEST_VERSION\?=\K.+' Makefile)
           echo "crate=$crate current=$current duckdb=$duckdb old_duckdb=$old_duckdb"
           echo "crate=$crate" >> "$GITHUB_OUTPUT"
           echo "current=$current" >> "$GITHUB_OUTPUT"
@@ -64,7 +64,8 @@ jobs:
           OLD_DUCKDB: ${{ steps.v.outputs.old_duckdb }}
         run: |
           sed -i "s/\"$CURRENT\"/\"$CRATE\"/g" Cargo.toml
-          sed -i "s/^TARGET_DUCKDB_VERSION=.*/TARGET_DUCKDB_VERSION=$DUCKDB/" Makefile
+          # Stable C API: TARGET_DUCKDB_VERSION is the minimum supported DuckDB, only the test version follows the crate
+          sed -i "s/^DUCKDB_TEST_VERSION?=.*/DUCKDB_TEST_VERSION?=${DUCKDB#v}/" Makefile
 
           # Bump extension patch version
           ext=$(grep -oP '^version = "\K[^"]+' Cargo.toml | head -1)
@@ -104,7 +105,7 @@ jobs:
           body: |
             Automated bump:
             - `duckdb` / `libduckdb-sys` crates → `${{ steps.v.outputs.crate }}`
-            - `TARGET_DUCKDB_VERSION` → `${{ steps.v.outputs.duckdb }}`
+            - `DUCKDB_TEST_VERSION` → `${{ steps.v.outputs.duckdb }}`
             - `extension-ci-tools` submodule → `${{ steps.v.outputs.duckdb }}`
             - extension version → `${{ env.NEW_EXT }}`
 

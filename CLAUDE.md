@@ -150,3 +150,7 @@ The workflow is defined in `.github/workflows/MainDistributionPipeline.yml`.
 
 - Extensions may fail to load on Windows with Python 3.11 (use Python 3.12)
 - Forward lookups without a record type return only IPv4 addresses; IPv6 addresses are filtered out (use record type `AAAA`)
+
+## Pull Requests
+
+Never merge PRs or push to `main` directly. Open a PR and request review from the other maintainer; see [AGENTS.md](AGENTS.md).

@@ -471,12 +471,12 @@ make test_release  # Test release build
 
 ```shell
 make clean_all
-DUCKDB_TEST_VERSION=1.5.6 make configure  # default: 2.0.0
+DUCKDB_TEST_VERSION=1.5.6 make configure
 make debug
 make test_debug
 ```
 
-The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET_DUCKDB_VERSION` (v1.5.6), including v2.x. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
+Because the extension uses the unstable C API, it only loads in the exact DuckDB version it was built for, so the test version must match `TARGET_DUCKDB_VERSION`. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
 
 ## Development
 
@@ -526,9 +526,9 @@ All functions:
 ### Configuration
 
 - **Extension Name**: `dns`
-- **DuckDB Version**: v2.0.0 (tested, `DUCKDB_TEST_VERSION`); minimum v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
+- **DuckDB Version**: v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
 - **Rust Edition**: 2021
-- **Uses Unstable C API**: No (`USE_UNSTABLE_C_API=0` in Makefile; DuckDB v2 only loads stable v1 C API extensions or v2 C API ones)
+- **Uses Unstable C API**: Yes (`USE_UNSTABLE_C_API=1` in Makefile)
 - **Library Type**: cdylib (native dynamic library)
 
 ## Known Issues

@@ -4,15 +4,13 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 EXTENSION_NAME=dns
 
-# Stable C API: DuckDB v2 dropped the v1 unstable C API, but still loads extensions built against the stable v1 C API.
-# Binaries load on any DuckDB >= TARGET_DUCKDB_VERSION (incl. v2.x)
-USE_UNSTABLE_C_API=0
+# Set to 1 to enable Unstable API (binaries will only work on TARGET_DUCKDB_VERSION, forwards compatibility will be broken)
+# Note: currently extension-template-rs requires this, as duckdb-rs relies on unstable C API functionality
+USE_UNSTABLE_C_API=1
 
-# Minimum DuckDB (C API) version
+# Target DuckDB version
 TARGET_DUCKDB_VERSION=v1.5.6
-# DuckDB version to test with
-DUCKDB_TEST_VERSION?=2.0.0
-
+DUCKDB_TEST_VERSION?=$(patsubst v%,%,$(TARGET_DUCKDB_VERSION))
 
 all: configure debug
 

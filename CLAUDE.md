@@ -56,12 +56,12 @@ Tests are written in SQLLogicTest format in `test/sql/`: `dns.test` (functional 
 ### Testing with Different DuckDB Versions
 ```bash
 make clean_all
-DUCKDB_TEST_VERSION=1.5.6 make configure  # default: 2.0.0
+DUCKDB_TEST_VERSION=1.5.6 make configure
 make debug
 make test_debug
 ```
 
-The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET_DUCKDB_VERSION` (v1.5.6), including v2.x. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
+Because the extension uses the unstable C API, it only loads in the exact DuckDB version it was built for, so the test version must match `TARGET_DUCKDB_VERSION`. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
 
 ### Cleaning
 - **Clean build artifacts**: `make clean`
@@ -111,8 +111,8 @@ Key implementation details:
 - Errors return NULL rather than propagating exceptions
 
 ### Dependencies
-- `duckdb` (v1.10506.1, built against the stable v1 C API) with "vtab-loadable" and "vscalar" features; it pulls in `duckdb-loadable-macros` for the entry point macro
-- `libduckdb-sys` (v1.10506.1, built against the stable v1 C API) with "loadable-extension" feature
+- `duckdb` (v1.10506.0, i.e. DuckDB v1.5.6) with "vtab-loadable" and "vscalar" features; it pulls in `duckdb-loadable-macros` for the entry point macro
+- `libduckdb-sys` (v1.10506.0, i.e. DuckDB v1.5.6) with "loadable-extension" feature
 - `tokio` (v1.52) with "rt", "net", "macros", "rt-multi-thread", and "sync" features (for async DNS resolution)
 - `hickory-resolver` (v0.26) for DNS lookups (successor to `trust-dns-resolver`)
 - `hickory-proto` (v0.26) for DNS protocol types such as `RecordType`
@@ -121,8 +121,8 @@ Key implementation details:
 - `arc-swap` (v1.9) for lock-free swapping of the resolver, semaphore and settings
 
 ### Configuration
-- **DuckDB target version**: v2.0.0 (tested, `DUCKDB_TEST_VERSION`); minimum v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
-- **Uses unstable C API**: No (`USE_UNSTABLE_C_API=0` in Makefile; DuckDB v2 only loads stable v1 C API extensions or v2 C API ones)
+- **DuckDB target version**: v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
+- **Uses unstable C API**: Yes (`USE_UNSTABLE_C_API=1` in Makefile)
 - **Extension name**: "dns" (Makefile and Cargo.toml)
 - **Rust edition**: 2021
 - **Library type**: cdylib (native dynamic library)
@@ -142,7 +142,7 @@ SELECT reverse_dns_lookup('8.8.8.8');
 
 ## CI/CD
 
-The project uses DuckDB's extension-ci-tools (`v2.0-cyanoptera` branch, DuckDB v2.0.0) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
+The project uses DuckDB's extension-ci-tools (`v1.5-variegata` branch, DuckDB v1.5.6) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
 
 The workflow is defined in `.github/workflows/MainDistributionPipeline.yml`.
 

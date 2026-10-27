@@ -1,6 +1,6 @@
 # DNS Extension for DuckDB
 
-A DuckDB extension for performing DNS lookups and reverse DNS lookups, written in pure Rust using the DuckDB C Extension API.
+A DuckDB extension for performing DNS lookups and reverse DNS lookups, written in pure Rust using DuckDB's v2 C API through `duckdb-neo`.
 
 ## Features
 
@@ -26,6 +26,16 @@ LOAD dns;
 ```
 
 ## Functions
+
+After loading the extension, descriptions, parameter names and types, examples, and categories are available through `duckdb_functions()`. Each overload has its own documentation:
+
+```sql
+SELECT function_name, parameters, parameter_types, return_type,
+       description, examples, categories
+FROM duckdb_functions()
+WHERE list_contains(categories, 'dns')
+ORDER BY function_name, len(parameters);
+```
 
 ### `dns_lookup(hostname, [record_type])`
 
@@ -252,7 +262,7 @@ WHERE dns_lookup_all(domain, 'TXT') IS NOT NULL;
 
 #### Prerequisites
 
-- Rust toolchain
+- Rust toolchain (1.88 or newer)
 - Python 3
 - Python 3 venv
 - Make
@@ -467,16 +477,16 @@ make test_debug    # Test debug build
 make test_release  # Test release build
 ```
 
-### Testing with Different DuckDB Versions
+### Testing with the Matching DuckDB Version
 
 ```shell
 make clean_all
-DUCKDB_TEST_VERSION=1.5.6 make configure  # default: 2.0.0
+DUCKDB_TEST_VERSION=2.0.0 make configure
 make debug
 make test_debug
 ```
 
-The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET_DUCKDB_VERSION` (v1.5.6), including v2.x. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
+The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.0`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
 
 ## Development
 
@@ -489,9 +499,9 @@ The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET
 
 ### Architecture
 
-The extension implements five scalar functions and one table function:
+The extension implements six scalar functions and one table function:
 
-#### Scalar Functions (using `VScalar` trait):
+#### Scalar Functions (using `ScalarCallbacks`):
 
 1. **ReverseDnsLookup**: Reverse DNS lookup (IPv4/IPv6 → hostname)
 2. **DnsLookup**: Forward DNS lookup (hostname → first record)
@@ -508,9 +518,11 @@ The extension implements five scalar functions and one table function:
    - Uses lock-free atomic operations (arc-swap) for instant changes
    - Prevents TCP connection exhaustion
 
-#### Table Function (using `VTab` trait):
+6. **SetDnsCacheSize**: Update the DNS cache size and clear cached entries
 
-6. **Corey**: TXT record query (hostname → table of TXT records)
+#### Table Function (using `TableFunctionCallbacks`):
+
+7. **Corey**: TXT record query (hostname → table of TXT records)
    - Returns a table with one row per TXT record
    - Useful for filtering and aggregation
 
@@ -526,9 +538,10 @@ All functions:
 ### Configuration
 
 - **Extension Name**: `dns`
-- **DuckDB Version**: v2.0.0 (tested, `DUCKDB_TEST_VERSION`); minimum v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
-- **Rust Edition**: 2021
-- **Uses Unstable C API**: No (`USE_UNSTABLE_C_API=0` in Makefile; DuckDB v2 only loads stable v1 C API extensions or v2 C API ones)
+- **DuckDB Version**: v2.0.0 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
+- **Rust Edition**: 2021 (toolchain 1.88 or newer for `duckdb-neo`)
+- **Rust Bindings**: `duckdb-neo` `~0.20000.0` and `duckdb-loadable-macros` `~1.20000.0`
+- **Uses Unstable C API**: Yes (`USE_UNSTABLE_C_API=1`); v2 entrypoint with `C_STRUCT_UNSTABLE` metadata
 - **Library Type**: cdylib (native dynamic library)
 
 ## Known Issues
@@ -541,7 +554,7 @@ All functions:
 
 The project uses DuckDB's extension-ci-tools for automated builds across multiple platforms via GitHub Actions.
 
-`.github/workflows/UpdateDuckDB.yml` checks weekly for a new `duckdb` crate release and opens a PR bumping the crates, `TARGET_DUCKDB_VERSION`, the `extension-ci-tools` submodule and the extension version. CI on PRs opened with the default `GITHUB_TOKEN` waits for manual approval in the Actions tab; add an `UPDATE_PR_TOKEN` secret (PAT with `contents` + `pull-requests` write) to run it automatically.
+`.github/workflows/UpdateDuckDB.yml` checks weekly for a new `duckdb-neo` crate release and opens a PR updating its required macro crate, the v2 entrypoint, metadata, test runtime, CI versions, the `extension-ci-tools` submodule and the extension version. CI on PRs opened with the default `GITHUB_TOKEN` waits for manual approval in the Actions tab; add an `UPDATE_PR_TOKEN` secret (PAT with `contents` + `pull-requests` write) to run it automatically.
 
 ## License
 

@@ -1,0 +1,36 @@
+# name: test/sql/corey.test
+# description: v2 table binding, scan state, VARCHAR output and end-of-stream
+# group: [dns]
+
+require dns
+
+# Typed scalar overloads also return TXT strings and nested lists correctly.
+query I
+SELECT CAST(
+  dns_lookup('_dmarc.google.com', 'TXT') LIKE '%v=DMARC1%'
+  AND len(dns_lookup_all('_dmarc.google.com', 'TXT')) > 0
+  AS INTEGER
+);
+----
+1
+
+query I
+SELECT CAST(COUNT(*) > 0 AND bool_and(txt_record LIKE '%v=DMARC1%') AS INTEGER)
+FROM corey('_dmarc.google.com');
+----
+1
+
+# Two scans must own separate cursors and terminate after emitting their rows.
+query I
+SELECT CAST(COUNT(*) > 0 AS INTEGER)
+FROM corey('_dmarc.google.com') a CROSS JOIN corey('_dmarc.google.com') b;
+----
+1
+
+# Projection, filtering and early termination still work without pushdown.
+query I
+SELECT COUNT(*) FROM (
+  SELECT txt_record FROM corey('google.com') WHERE txt_record LIKE '%spf%' LIMIT 1
+);
+----
+1

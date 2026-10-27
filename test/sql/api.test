@@ -1,0 +1,132 @@
+# name: test/sql/api.test
+# description: v2 C API vectors, NULLs and configuration (no external DNS required)
+# group: [dns]
+
+require dns
+
+# All overloads and the table function are registered through the v2 entrypoint.
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name IN (
+  'dns_lookup', 'dns_lookup_all', 'reverse_dns_lookup', 'set_dns_config',
+  'set_dns_concurrency_limit', 'set_dns_cache_size', 'corey'
+);
+----
+9
+
+query T
+SELECT dns_lookup('localhost');
+----
+127.0.0.1
+
+query I
+SELECT CAST(dns_lookup_all('localhost') = ['127.0.0.1'] AS INTEGER);
+----
+1
+
+# NULL arguments and invalid record types retain their SQL behavior.
+query I
+SELECT CAST(
+  dns_lookup(NULL) IS NULL AND dns_lookup_all(NULL) IS NULL
+  AND reverse_dns_lookup(NULL) IS NULL
+  AND dns_lookup('localhost', NULL) IS NULL
+  AND dns_lookup_all('localhost', NULL) IS NULL
+  AND dns_lookup('localhost', 'INVALID') IS NULL
+  AND dns_lookup_all('localhost', 'INVALID') IS NULL
+  AS INTEGER
+);
+----
+1
+
+# More than one vector batch, mixed validity masks, and nested VARCHAR[] output.
+query II
+WITH inputs AS (
+  SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'localhost' END AS hostname
+  FROM range(5000) t(i)
+), resolved AS MATERIALIZED (
+  SELECT i, dns_lookup(hostname) AS ip, dns_lookup_all(hostname) AS ips FROM inputs
+)
+SELECT
+  COUNT(*) FILTER (WHERE i % 3 = 0 AND ip IS NULL AND ips IS NULL),
+  COUNT(*) FILTER (WHERE i % 3 <> 0 AND ip = '127.0.0.1' AND ips = ['127.0.0.1'])
+FROM resolved;
+----
+1667	3333
+
+# Selected rows exercise input vectors produced by filtering; reverse lookups
+# fail locally before any DNS request, including long out-of-line strings.
+query I
+SELECT COUNT(*) FROM (
+  SELECT reverse_dns_lookup(CASE WHEN i % 3 = 0 THEN NULL ELSE repeat('x', 40) END) AS hostname
+  FROM range(5000) t(i) WHERE i % 2 = 0
+) WHERE hostname IS NULL;
+----
+2500
+
+query T
+SELECT set_dns_config(' GOOGLE ');
+----
+DNS configuration updated to 'google'
+
+query T
+SELECT set_dns_config('invalid');
+----
+Unknown preset 'invalid'. Supported presets: default, google, cloudflare, quad9
+
+query I
+SELECT CAST(set_dns_config(NULL) IS NULL AND set_dns_cache_size(NULL) IS NULL
+  AND set_dns_concurrency_limit(NULL) IS NULL AS INTEGER);
+----
+1
+
+query T
+SELECT set_dns_concurrency_limit(25);
+----
+Concurrency limit updated to 25
+
+query T
+SELECT set_dns_cache_size(2048);
+----
+DNS cache size updated to 2048
+
+query TT
+SELECT set_dns_concurrency_limit(0), set_dns_cache_size(-1);
+----
+Concurrency limit must be greater than 0	Cache size must be greater than 0
+
+# Configuration side effects must run at execution time, including prepared SQL.
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name IN ('set_dns_config', 'set_dns_concurrency_limit', 'set_dns_cache_size')
+  AND has_side_effects;
+----
+3
+
+statement ok
+PREPARE configure_cache AS SELECT set_dns_cache_size($1);
+
+query T
+EXECUTE configure_cache(1024);
+----
+DNS cache size updated to 1024
+
+query T
+EXECUTE configure_cache(4096);
+----
+DNS cache size updated to 4096
+
+# A table binding error must leave the connection usable.
+statement error
+SELECT * FROM corey(NULL::VARCHAR);
+----
+hostname must not be NULL
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SELECT set_dns_config('default');
+
+statement ok
+SELECT set_dns_concurrency_limit(50);

@@ -1,17 +1,25 @@
 use arc_swap::ArcSwap;
-use duckdb::{
-    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
-    duckdb_entrypoint_c_api,
-    types::DuckString,
-    vscalar::{ScalarFunctionSignature, VScalar},
-    vtab::{arrow::WritableVector, BindInfo, InitInfo, TableFunctionInfo, VTab},
-    Connection, Result,
+use duckdb_loadable_macros::duckdb_entrypoint_c_api_v2;
+use duckdb_neo::{
+    bind_arguments::BindArgument,
+    connection::Context,
+    data_chunk::{DataChunkRef, VectorCollection},
+    enums::{FunctionProperty, FunctionPropertyStability},
+    extension::Extension,
+    scalar::{ScalarCallbacks, ScalarFunctionBuilder},
+    signature::{FunctionParameter, SignatureBuilder},
+    table_function::{
+        BindFunctionHandle, ExecColumnInfo, InitColumnData, TableFunctionBuilder,
+        TableFunctionCallbacks,
+    },
+    types::List,
+    vector::{Unknown, Vector},
+    DuckDBType, Result,
 };
 use hickory_proto::rr::RecordType;
 use hickory_resolver::config::*;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::Resolver;
-use libduckdb_sys::duckdb_string_t;
 use once_cell::sync::Lazy;
 use std::{error::Error, net::IpAddr, str::FromStr, sync::Arc};
 
@@ -407,69 +415,40 @@ async fn dns_lookup_all_with_type_async(
 /// ```
 struct ReverseDnsLookup;
 
-impl VScalar for ReverseDnsLookup {
-    type State = ();
+impl ScalarCallbacks for ReverseDnsLookup {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let input_vector = input.flat_vector(0);
-        let mut output_vector = output.flat_vector();
-
-        // Get input strings
-        let values = unsafe { input_vector.as_slice_with_len::<duckdb_string_t>(size) };
-        let strings: Vec<String> = values
-            .iter()
-            .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
-            .collect();
-
-        // Use the global resolver state - load once for all lookups
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let values = input.get_vector_at::<String>(0)?.reader()?;
         let resolver = &GLOBAL_DNS_STATE.resolver;
-        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
-
-        // Process all lookups concurrently with semaphore-controlled execution
-        let futures: Vec<_> = strings
-            .iter()
-            .enumerate()
-            .map(|(i, ip_address)| {
-                let is_null = input_vector.row_is_null(i as u64);
-                let ip_address = ip_address.clone();
-                let sem = semaphore.clone();
-                async move {
-                    if is_null {
-                        (i, None)
-                    } else {
-                        let _permit = sem.acquire().await.unwrap();
-                        let result = reverse_dns_lookup_async(resolver, &ip_address).await;
-                        (i, result.ok())
-                    }
-                }
-            })
-            .collect();
-
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load_full();
+        let futures = values.iter().map(|ip_address| {
+            let semaphore = &semaphore;
+            async move {
+                let ip_address = ip_address?;
+                let _permit = semaphore.acquire().await.ok()?;
+                reverse_dns_lookup_async(resolver, ip_address).await.ok()
+            }
+        });
         let results = GLOBAL_DNS_STATE
             .runtime
-            .block_on(async { futures::future::join_all(futures).await });
+            .block_on(futures::future::join_all(futures));
 
-        // Write results to output
-        for (i, result) in results.into_iter().take(size) {
-            match result {
-                Some(hostname) => output_vector.insert(i, hostname.as_str()),
-                None => output_vector.set_null(i),
-            }
+        let mut output = output.cast::<String>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
+        for (i, result) in results.iter().enumerate() {
+            writer.set(i, result.as_deref())?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![ScalarFunctionSignature::exact(
-            vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)],
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
-        )]
     }
 }
 
@@ -506,113 +485,52 @@ impl VScalar for ReverseDnsLookup {
 /// ```
 struct DnsLookup;
 
-impl VScalar for DnsLookup {
-    type State = ();
+impl ScalarCallbacks for DnsLookup {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let hostname_vector = input.flat_vector(0);
-        let mut output_vector = output.flat_vector();
-
-        // Get hostname strings
-        let hostname_values = unsafe { hostname_vector.as_slice_with_len::<duckdb_string_t>(size) };
-        let hostnames: Vec<String> = hostname_values
-            .iter()
-            .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
-            .collect();
-
-        // Check if we have a second parameter (record_type)
-        let record_types: Option<Vec<Option<String>>> = if input.num_columns() > 1 {
-            let record_type_vector = input.flat_vector(1);
-            let record_type_values =
-                unsafe { record_type_vector.as_slice_with_len::<duckdb_string_t>(size) };
-            Some(
-                (0..size)
-                    .map(|i| {
-                        if record_type_vector.row_is_null(i as u64) {
-                            None
-                        } else {
-                            Some(
-                                DuckString::new(&mut { record_type_values[i] })
-                                    .as_str()
-                                    .to_string(),
-                            )
-                        }
-                    })
-                    .collect(),
-            )
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let hostnames = input.get_vector_at::<String>(0)?.reader()?;
+        let record_types = if input.col_count() > 1 {
+            Some(input.get_vector_at::<String>(1)?.reader()?)
         } else {
             None
         };
-
-        // Use the global resolver state - load once for all lookups
         let resolver = &GLOBAL_DNS_STATE.resolver;
-        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
-
-        // Process all lookups concurrently with semaphore-controlled execution
-        let futures: Vec<_> = hostnames
-            .iter()
-            .enumerate()
-            .map(|(i, hostname)| {
-                let is_null = hostname_vector.row_is_null(i as u64);
-                let hostname = hostname.clone();
-                let record_type_opt = record_types.as_ref().and_then(|rt| rt[i].clone());
-                let sem = semaphore.clone();
-                async move {
-                    if is_null {
-                        (i, None)
-                    } else {
-                        let _permit = sem.acquire().await.unwrap();
-                        let result = if let Some(record_type_str) = record_type_opt {
-                            match parse_record_type(&record_type_str) {
-                                Ok(record_type) => {
-                                    dns_lookup_with_type_async(resolver, &hostname, record_type)
-                                        .await
-                                }
-                                Err(e) => Err(e),
-                            }
-                        } else {
-                            dns_lookup_async(resolver, &hostname).await
-                        };
-                        (i, result.ok())
-                    }
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load_full();
+        let futures = hostnames.iter().enumerate().map(|(i, hostname)| {
+            let semaphore = &semaphore;
+            async move {
+                let hostname = hostname?;
+                let _permit = semaphore.acquire().await.ok()?;
+                if let Some(record_types) = record_types {
+                    let record_type = parse_record_type(record_types.get(i).ok()??).ok()?;
+                    dns_lookup_with_type_async(resolver, hostname, record_type)
+                        .await
+                        .ok()
+                } else {
+                    dns_lookup_async(resolver, hostname).await.ok()
                 }
-            })
-            .collect();
-
+            }
+        });
         let results = GLOBAL_DNS_STATE
             .runtime
-            .block_on(async { futures::future::join_all(futures).await });
+            .block_on(futures::future::join_all(futures));
 
-        // Write results to output
-        for (i, result) in results.into_iter().take(size) {
-            match result {
-                Some(data) => output_vector.insert(i, data.as_str()),
-                None => output_vector.set_null(i),
-            }
+        let mut output = output.cast::<String>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
+        for (i, result) in results.iter().enumerate() {
+            writer.set(i, result.as_deref())?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![
-            ScalarFunctionSignature::exact(
-                vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)],
-                LogicalTypeHandle::from(LogicalTypeId::Varchar),
-            ),
-            ScalarFunctionSignature::exact(
-                vec![
-                    LogicalTypeHandle::from(LogicalTypeId::Varchar),
-                    LogicalTypeHandle::from(LogicalTypeId::Varchar),
-                ],
-                LogicalTypeHandle::from(LogicalTypeId::Varchar),
-            ),
-        ]
     }
 }
 
@@ -649,131 +567,57 @@ impl VScalar for DnsLookup {
 /// ```
 struct DnsLookupAll;
 
-impl VScalar for DnsLookupAll {
-    type State = ();
+impl ScalarCallbacks for DnsLookupAll {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let hostname_vector = input.flat_vector(0);
-        let mut output_vector = output.list_vector();
-
-        // Get hostname strings
-        let hostname_values = unsafe { hostname_vector.as_slice_with_len::<duckdb_string_t>(size) };
-        let hostnames: Vec<String> = hostname_values
-            .iter()
-            .map(|ptr| DuckString::new(&mut { *ptr }).as_str().to_string())
-            .collect();
-
-        // Check if we have a second parameter (record_type)
-        let record_types: Option<Vec<Option<String>>> = if input.num_columns() > 1 {
-            let record_type_vector = input.flat_vector(1);
-            let record_type_values =
-                unsafe { record_type_vector.as_slice_with_len::<duckdb_string_t>(size) };
-            Some(
-                (0..size)
-                    .map(|i| {
-                        if record_type_vector.row_is_null(i as u64) {
-                            None
-                        } else {
-                            Some(
-                                DuckString::new(&mut { record_type_values[i] })
-                                    .as_str()
-                                    .to_string(),
-                            )
-                        }
-                    })
-                    .collect(),
-            )
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let hostnames = input.get_vector_at::<String>(0)?.reader()?;
+        let record_types = if input.col_count() > 1 {
+            Some(input.get_vector_at::<String>(1)?.reader()?)
         } else {
             None
         };
-
-        // Use the global resolver state - load once for all lookups
         let resolver = &GLOBAL_DNS_STATE.resolver;
-        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load();
-
-        // Process all lookups concurrently with semaphore-controlled execution
-        let futures: Vec<_> = hostnames
-            .iter()
-            .enumerate()
-            .map(|(i, hostname)| {
-                let is_null = hostname_vector.row_is_null(i as u64);
-                let hostname = hostname.clone();
-                let record_type_opt = record_types.as_ref().and_then(|rt| rt[i].clone());
-                let sem = semaphore.clone();
-                async move {
-                    if is_null {
-                        None
-                    } else {
-                        let _permit = sem.acquire().await.unwrap();
-                        let result = if let Some(record_type_str) = record_type_opt {
-                            match parse_record_type(&record_type_str) {
-                                Ok(record_type) => {
-                                    dns_lookup_all_with_type_async(resolver, &hostname, record_type)
-                                        .await
-                                }
-                                Err(e) => Err(e),
-                            }
-                        } else {
-                            dns_lookup_all_async(resolver, &hostname).await
-                        };
-                        result.ok()
-                    }
-                }
-            })
-            .collect();
-
-        let all_results = GLOBAL_DNS_STATE
-            .runtime
-            .block_on(async { futures::future::join_all(futures).await });
-
-        // Calculate total number of records for capacity
-        let total_capacity: usize = all_results
-            .iter()
-            .map(|r| r.as_ref().map_or(0, |v| v.len()))
-            .sum();
-
-        // Get the child vector with appropriate capacity
-        let child_vector = output_vector.child(total_capacity);
-
-        // Now insert the data
-        let mut offset = 0;
-        for (i, result) in all_results.iter().enumerate() {
-            match result {
-                Some(records) => {
-                    output_vector.set_entry(i, offset, records.len());
-                    for record in records {
-                        child_vector.insert(offset, record.as_str());
-                        offset += 1;
-                    }
-                }
-                None => {
-                    output_vector.set_null(i);
+        let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load_full();
+        let futures = hostnames.iter().enumerate().map(|(i, hostname)| {
+            let semaphore = &semaphore;
+            async move {
+                let hostname = hostname?;
+                let _permit = semaphore.acquire().await.ok()?;
+                if let Some(record_types) = record_types {
+                    let record_type = parse_record_type(record_types.get(i).ok()??).ok()?;
+                    dns_lookup_all_with_type_async(resolver, hostname, record_type)
+                        .await
+                        .ok()
+                } else {
+                    dns_lookup_all_async(resolver, hostname).await.ok()
                 }
             }
+        });
+        let results = GLOBAL_DNS_STATE
+            .runtime
+            .block_on(futures::future::join_all(futures));
+
+        let mut output = output.cast::<List<String>>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
+        for (i, result) in results.iter().enumerate() {
+            writer.set(
+                i,
+                result
+                    .as_ref()
+                    .map(|records| records.iter().map(|record| Some(record.as_str())).collect()),
+            )?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![
-            ScalarFunctionSignature::exact(
-                vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)],
-                LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-            ),
-            ScalarFunctionSignature::exact(
-                vec![
-                    LogicalTypeHandle::from(LogicalTypeId::Varchar),
-                    LogicalTypeHandle::from(LogicalTypeId::Varchar),
-                ],
-                LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-            ),
-        ]
     }
 }
 
@@ -807,34 +651,29 @@ impl VScalar for DnsLookupAll {
 /// Changing configuration clears the DNS cache.
 struct SetDnsConfig;
 
-impl VScalar for SetDnsConfig {
-    type State = ();
+impl ScalarCallbacks for SetDnsConfig {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let input_vector = input.flat_vector(0);
-        let mut output_vector = output.flat_vector();
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let values = input.get_vector_at::<String>(0)?.reader()?;
+        let mut output = output.cast::<String>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
 
-        // Get input strings
-        let values = unsafe { input_vector.as_slice_with_len::<duckdb_string_t>(size) };
-
-        for i in 0..size {
-            if input_vector.row_is_null(i as u64) {
-                output_vector.set_null(i);
+        for (i, value) in values.iter().enumerate() {
+            let Some(value) = value else {
+                writer.set(i, None)?;
                 continue;
-            }
-
-            let preset = DuckString::new(&mut { values[i] })
-                .as_str()
-                .trim()
-                .to_lowercase();
-
-            // Update the global resolver configuration
-            // This is a lock-free atomic operation - extremely fast!
+            };
+            let preset = value.trim().to_lowercase();
             let update_result = match preset.as_str() {
                 "default" => GLOBAL_DNS_STATE.update_default_config(),
                 "google" => GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&GOOGLE)),
@@ -843,32 +682,18 @@ impl VScalar for SetDnsConfig {
                 }
                 "quad9" => GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&QUAD9)),
                 _ => {
-                    let error_msg = format!("Unknown preset '{}'. Supported presets: default, google, cloudflare, quad9", preset);
-                    output_vector.insert(i, &error_msg);
+                    let message = format!("Unknown preset '{}'. Supported presets: default, google, cloudflare, quad9", preset);
+                    writer.set(i, Some(&message))?;
                     continue;
                 }
             };
-
-            match update_result {
-                Ok(_) => {
-                    let success_msg = format!("DNS configuration updated to '{}'", preset);
-                    output_vector.insert(i, &success_msg);
-                }
-                Err(e) => {
-                    let error_msg = format!("Failed to update DNS configuration: {}", e);
-                    output_vector.insert(i, &error_msg);
-                }
-            }
+            let message = match update_result {
+                Ok(()) => format!("DNS configuration updated to '{}'", preset),
+                Err(e) => format!("Failed to update DNS configuration: {}", e),
+            };
+            writer.set(i, Some(&message))?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![ScalarFunctionSignature::exact(
-            vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)],
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
-        )]
     }
 }
 
@@ -905,57 +730,39 @@ impl VScalar for SetDnsConfig {
 /// This setting applies globally to all DNS lookup operations and takes effect immediately.
 struct SetConcurrencyLimit;
 
-impl VScalar for SetConcurrencyLimit {
-    type State = ();
+impl ScalarCallbacks for SetConcurrencyLimit {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let input_vector = input.flat_vector(0);
-        let mut output_vector = output.flat_vector();
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let values = input.get_vector_at::<i64>(0)?.reader()?;
+        let mut output = output.cast::<String>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
 
-        // Get input values
-        let values = unsafe { input_vector.as_slice_with_len::<i64>(size) };
-
-        for i in 0..size {
-            if input_vector.row_is_null(i as u64) {
-                output_vector.set_null(i);
+        for (i, value) in values.iter().enumerate() {
+            let Some(&limit) = value else {
+                writer.set(i, None)?;
                 continue;
-            }
-
-            let limit = values[i];
-
-            if limit <= 0 {
-                let error_msg = "Concurrency limit must be greater than 0";
-                output_vector.insert(i, error_msg);
-                continue;
-            }
-
-            // Update the global concurrency limit
-            // This is a lock-free atomic operation - extremely fast!
-            match GLOBAL_DNS_STATE.set_dns_concurrency_limit(limit as usize) {
-                Ok(_) => {
-                    let success_msg = format!("Concurrency limit updated to {}", limit);
-                    output_vector.insert(i, &success_msg);
+            };
+            let message = if limit <= 0 {
+                "Concurrency limit must be greater than 0".to_string()
+            } else {
+                match GLOBAL_DNS_STATE.set_dns_concurrency_limit(limit as usize) {
+                    Ok(()) => format!("Concurrency limit updated to {}", limit),
+                    Err(e) => format!("Failed to update concurrency limit: {}", e),
                 }
-                Err(e) => {
-                    let error_msg = format!("Failed to update concurrency limit: {}", e);
-                    output_vector.insert(i, &error_msg);
-                }
-            }
+            };
+            writer.set(i, Some(&message))?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![ScalarFunctionSignature::exact(
-            vec![LogicalTypeHandle::from(LogicalTypeId::Bigint)],
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
-        )]
     }
 }
 
@@ -986,57 +793,39 @@ impl VScalar for SetConcurrencyLimit {
 /// This operation takes effect immediately for all subsequent DNS queries.
 struct SetDnsCacheSize;
 
-impl VScalar for SetDnsCacheSize {
-    type State = ();
+impl ScalarCallbacks for SetDnsCacheSize {
+    type BindData = ();
+    type InitData = ();
 
-    fn invoke(
-        _state: &Self::State,
-        input: &mut DataChunkHandle,
-        output: &mut dyn WritableVector,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let size = input.len();
-        let input_vector = input.flat_vector(0);
-        let mut output_vector = output.flat_vector();
+    fn exec(
+        &self,
+        _bind_data: Option<&Self::BindData>,
+        _init_data: Option<&mut Self::InitData>,
+        _context: &Context,
+        input: &mut VectorCollection,
+        output: Vector<'_, Unknown>,
+    ) -> Result<()> {
+        let values = input.get_vector_at::<i64>(0)?.reader()?;
+        let mut output = output.cast::<String>()?;
+        output.set_size(input.row_count()?)?;
+        let mut writer = output.writer()?;
 
-        // Get input values
-        let values = unsafe { input_vector.as_slice_with_len::<i64>(size) };
-
-        for i in 0..size {
-            if input_vector.row_is_null(i as u64) {
-                output_vector.set_null(i);
+        for (i, value) in values.iter().enumerate() {
+            let Some(&size) = value else {
+                writer.set(i, None)?;
                 continue;
-            }
-
-            let cache_size = values[i];
-
-            if cache_size <= 0 {
-                let error_msg = "Cache size must be greater than 0";
-                output_vector.insert(i, error_msg);
-                continue;
-            }
-
-            // Update the global cache size
-            // This is a lock-free atomic operation - extremely fast!
-            match GLOBAL_DNS_STATE.set_dns_cache_size(cache_size as u64) {
-                Ok(_) => {
-                    let success_msg = format!("DNS cache size updated to {}", cache_size);
-                    output_vector.insert(i, &success_msg);
+            };
+            let message = if size <= 0 {
+                "Cache size must be greater than 0".to_string()
+            } else {
+                match GLOBAL_DNS_STATE.set_dns_cache_size(size as u64) {
+                    Ok(()) => format!("DNS cache size updated to {}", size),
+                    Err(e) => format!("Failed to update cache size: {}", e),
                 }
-                Err(e) => {
-                    let error_msg = format!("Failed to update cache size: {}", e);
-                    output_vector.insert(i, &error_msg);
-                }
-            }
+            };
+            writer.set(i, Some(&message))?;
         }
-
         Ok(())
-    }
-
-    fn signatures() -> Vec<ScalarFunctionSignature> {
-        vec![ScalarFunctionSignature::exact(
-            vec![LogicalTypeHandle::from(LogicalTypeId::Bigint)],
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
-        )]
     }
 }
 
@@ -1070,123 +859,171 @@ impl VScalar for SetDnsCacheSize {
 /// ```
 ///
 /// # Notes
-/// - Returns an empty result set if no TXT records are found
+/// - Reports TXT lookup failures during binding
 /// - Performs the DNS lookup during the bind phase for efficiency
 /// - All records are fetched at once and then returned in chunks
 struct CoreyBindData {
-    #[allow(dead_code)]
-    hostname: String,
     txt_records: Vec<String>,
-    #[allow(dead_code)]
-    resolver_state: DnsResolverState,
-}
-
-struct CoreyInitData {
-    offset: std::sync::atomic::AtomicUsize,
 }
 
 struct Corey;
 
-impl VTab for Corey {
-    type InitData = CoreyInitData;
+impl TableFunctionCallbacks for Corey {
     type BindData = CoreyBindData;
+    type LocalState = usize;
+    type GlobalState = ();
 
-    fn bind(bind: &BindInfo) -> std::result::Result<Self::BindData, Box<dyn Error>> {
-        // Add result column for TXT records
-        bind.add_result_column(
-            "txt_record",
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
-        );
-
-        // Get hostname parameter
-        let hostname = bind.get_parameter(0).to_string();
-
-        // Create a long-lived resolver state
-        let resolver_state = DnsResolverState::new()?;
-
-        // Perform TXT lookup using the resolver state
+    fn bind(
+        &self,
+        context: &Context,
+        arguments: Vec<BindArgument>,
+        bind_handle: BindFunctionHandle<'_>,
+    ) -> Result<Self::BindData> {
+        bind_handle.add_result_column("txt_record", &String::logical_type(context)?)?;
+        let hostname = arguments[0]
+            .value
+            .as_ref()
+            .ok_or_else(|| duckdb_neo::Error::invalid_input("hostname must be constant"))?
+            .get::<String>()?
+            .ok_or_else(|| duckdb_neo::Error::invalid_input("hostname must not be NULL"))?;
+        let resolver_state =
+            DnsResolverState::new().map_err(|e| duckdb_neo::Error::invalid_input(e.to_string()))?;
         let txt_records = resolver_state.runtime.block_on(async {
-            // Lock-free load of the current resolver
-            let resolver_guard = resolver_state.resolver.load();
-            match resolver_guard
+            let resolver = resolver_state.resolver.load();
+            resolver
                 .lookup(hostname.trim(), RecordType::TXT)
                 .await
-            {
-                Ok(lookup) => {
-                    let records: Vec<String> = lookup
+                .map(|lookup| {
+                    lookup
                         .answers()
                         .iter()
                         .map(|record| record.data.to_string())
-                        .collect();
-                    Ok(records)
-                }
-                Err(e) => Err(format!("TXT lookup failed: {}", e)),
-            }
+                        .collect()
+                })
+                .map_err(|e| duckdb_neo::Error::invalid_input(format!("TXT lookup failed: {}", e)))
         })?;
-
-        Ok(CoreyBindData {
-            hostname,
-            txt_records,
-            resolver_state,
-        })
+        Ok(CoreyBindData { txt_records })
     }
 
-    fn init(_: &InitInfo) -> std::result::Result<Self::InitData, Box<dyn Error>> {
-        Ok(CoreyInitData {
-            offset: std::sync::atomic::AtomicUsize::new(0),
-        })
+    fn init_global_state(
+        &self,
+        _bind_data: &Self::BindData,
+        _context: &Context,
+        _column_data: InitColumnData<'_>,
+    ) -> Result<(Option<Self::GlobalState>, Option<usize>)> {
+        // One worker owns the cursor so each TXT record is emitted exactly once.
+        Ok((None, Some(1)))
     }
 
-    fn func(
-        func: &TableFunctionInfo<Self>,
-        output: &mut DataChunkHandle,
-    ) -> std::result::Result<(), Box<dyn Error>> {
-        let bind_data = func.get_bind_data();
-        let init_data = func.get_init_data();
+    fn init_local_state(
+        &self,
+        _bind_data: &Self::BindData,
+        _global_state: Option<&Self::GlobalState>,
+        _context: &Context,
+        _column_data: InitColumnData<'_>,
+    ) -> Result<Option<Self::LocalState>> {
+        Ok(Some(0))
+    }
 
-        let offset = init_data.offset.load(std::sync::atomic::Ordering::Relaxed);
-        let remaining = bind_data.txt_records.len().saturating_sub(offset);
-
-        if remaining == 0 {
-            output.set_len(0);
-            return Ok(());
+    fn exec(
+        &self,
+        bind_data: &Self::BindData,
+        _global_state: Option<&Self::GlobalState>,
+        local_state: Option<&mut Self::LocalState>,
+        _context: &Context,
+        mut output: DataChunkRef<'_>,
+        _column_info: ExecColumnInfo<'_>,
+    ) -> Result<()> {
+        let offset = local_state
+            .ok_or_else(|| duckdb_neo::Error::api_error("TXT scan state is not initialized"))?;
+        let records = &bind_data.txt_records[*offset..];
+        let count = records.len().min(2048);
+        let mut vector = output.get_vector_at_mut::<String>(0)?;
+        vector.set_size(count)?;
+        let mut writer = vector.writer()?;
+        for (i, record) in records.iter().take(count).enumerate() {
+            writer.set(i, Some(record.as_str()))?;
         }
-
-        // Determine how many records to return in this chunk
-        let chunk_size = remaining.min(2048); // DuckDB default vector size
-        output.set_len(chunk_size);
-
-        let result_vector = output.flat_vector(0);
-
-        // Write TXT records to output
-        for (i, txt_record) in bind_data.txt_records[offset..offset + chunk_size]
-            .iter()
-            .enumerate()
-        {
-            result_vector.insert(i, txt_record.as_str());
-        }
-
-        // Update offset for next call
-        init_data
-            .offset
-            .store(offset + chunk_size, std::sync::atomic::Ordering::Relaxed);
-
+        *offset += count;
         Ok(())
-    }
-
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
     }
 }
 
-#[duckdb_entrypoint_c_api()]
-pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    con.register_scalar_function::<ReverseDnsLookup>("reverse_dns_lookup")?;
-    con.register_scalar_function::<DnsLookup>("dns_lookup")?;
-    con.register_scalar_function::<DnsLookupAll>("dns_lookup_all")?;
-    con.register_scalar_function::<SetDnsConfig>("set_dns_config")?;
-    con.register_scalar_function::<SetConcurrencyLimit>("set_dns_concurrency_limit")?;
-    con.register_scalar_function::<SetDnsCacheSize>("set_dns_cache_size")?;
-    con.register_table_function::<Corey>("corey")?;
+fn register_scalar<T: ScalarCallbacks>(
+    extension: &Extension,
+    name: &str,
+    signature: SignatureBuilder,
+    implementation: T,
+) -> Result<()> {
+    ScalarFunctionBuilder::new(name, signature, implementation)
+        // DNS depends on external state, and configuration calls have side effects.
+        .set_property(FunctionProperty::Stability(
+            FunctionPropertyStability::Volatile,
+        ))
+        .register(extension)
+}
+
+#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]
+pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
+    register_scalar(
+        extension,
+        "reverse_dns_lookup",
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<String>("ip_address"))
+            .return_type(String::logical_type(extension)?),
+        ReverseDnsLookup,
+    )?;
+    for with_record_type in [false, true] {
+        let lookup_signature = || {
+            let mut signature =
+                SignatureBuilder::new().param(FunctionParameter::new::<String>("hostname"));
+            if with_record_type {
+                signature = signature.param(FunctionParameter::new::<String>("record_type"));
+            }
+            signature
+        };
+        register_scalar(
+            extension,
+            "dns_lookup",
+            lookup_signature().return_type(String::logical_type(extension)?),
+            DnsLookup,
+        )?;
+        register_scalar(
+            extension,
+            "dns_lookup_all",
+            lookup_signature().return_type(Vec::<String>::logical_type(extension)?),
+            DnsLookupAll,
+        )?;
+    }
+    register_scalar(
+        extension,
+        "set_dns_config",
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<String>("preset"))
+            .return_type(String::logical_type(extension)?),
+        SetDnsConfig,
+    )?;
+    register_scalar(
+        extension,
+        "set_dns_concurrency_limit",
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<i64>("limit"))
+            .return_type(String::logical_type(extension)?),
+        SetConcurrencyLimit,
+    )?;
+    register_scalar(
+        extension,
+        "set_dns_cache_size",
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<i64>("size"))
+            .return_type(String::logical_type(extension)?),
+        SetDnsCacheSize,
+    )?;
+    TableFunctionBuilder::new(
+        "corey",
+        SignatureBuilder::new().param(FunctionParameter::new::<String>("hostname")),
+        Corey,
+    )
+    .register(extension)?;
     Ok(())
 }

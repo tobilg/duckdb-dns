@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a DuckDB extension called "dns" that provides DNS lookup functionality. It's built using Rust and the DuckDB C Extension API, using the experimental DuckDB Rust extension template that requires no DuckDB build or C/C++ code.
+This is a DuckDB extension called "dns" that provides DNS lookup functionality. It's built using Rust, `duckdb-neo`, and DuckDB's experimental v2 C API, using the experimental DuckDB Rust extension template that requires no DuckDB build or C/C++ code.
 
 ### Extension Functions
 
@@ -18,7 +18,7 @@ The extension provides three lookup scalar functions:
 
 The lookup functions return NULL on errors rather than throwing exceptions.
 
-The extension provides three configuration scalar functions, which return a success or error message as a VARCHAR (DuckDB `SET` options aren't available through the C API, so these are called with `SELECT`):
+The extension provides three configuration scalar functions, which return a success or error message as a VARCHAR (called with `SELECT`):
 
 4. **`set_dns_config(preset)`**: Replaces the resolver with one of the presets `default` (system configuration, falling back to Google), `google`, `cloudflare` or `quad9`. This clears the DNS cache.
 
@@ -28,7 +28,7 @@ The extension provides three configuration scalar functions, which return a succ
 
 The extension provides one table function:
 
-7. **`corey(hostname)`**: Takes a mandatory `hostname` string and queries for TXT records. Returns all TXT records found as a table with a single column `txt_record` of type VARCHAR, or an empty result set if no records are found.
+7. **`corey(hostname)`**: Takes a mandatory `hostname` string and queries for TXT records. Returns all TXT records found as a table with a single column `txt_record` of type VARCHAR, or a binding error if the TXT lookup fails.
 
 ## Build System
 
@@ -51,17 +51,17 @@ Release builds use LTO and strip symbols (see Cargo.toml profile).
 - **Debug tests**: `make test_debug` or `make test`
 - **Release tests**: `make test_release`
 
-Tests are written in SQLLogicTest format in `test/sql/`: `dns.test` (functional tests), `cache_size.test`, `cache_performance.test` and `performance.test`. Most tests perform real DNS queries and need network access.
+Tests are written in SQLLogicTest format in `test/sql/`: `api.test` exercises v2 registration, vector batches, NULLs and configuration without external DNS; `corey.test` covers the TXT table function; `dns.test`, `cache_size.test`, `cache_performance.test` and `performance.test` cover DNS behavior. All files except `api.test` need network access.
 
-### Testing with Different DuckDB Versions
+### Testing with the Matching DuckDB Version
 ```bash
 make clean_all
-DUCKDB_TEST_VERSION=1.5.6 make configure  # default: 2.0.0
+DUCKDB_TEST_VERSION=2.0.0 make configure
 make debug
 make test_debug
 ```
 
-The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET_DUCKDB_VERSION` (v1.5.6), including v2.x. The test venv in `configure/` is only created once: after bumping DuckDB, run `make clean_all` before `make configure`, or the tests fail with a version mismatch.
+The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.0`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
 
 ### Cleaning
 - **Clean build artifacts**: `make clean`
@@ -72,19 +72,18 @@ The extension uses the stable C API, so one build loads in any DuckDB >= `TARGET
 All code lives in `src/lib.rs`.
 
 ### Extension Entry Point
-The extension uses the `#[duckdb_entrypoint_c_api()]` macro (re-exported by the `duckdb` crate from duckdb-loadable-macros) to define `extension_entrypoint()`. On load it registers the six scalar functions with `Connection::register_scalar_function()` and the `corey` table function with `Connection::register_table_function()`.
+The extension uses `#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]` from `duckdb-loadable-macros`. Its entrypoint receives an `Extension` and registers six scalar functions with `ScalarFunctionBuilder` and `corey` with `TableFunctionBuilder`. The exported symbol is `dns_init_c_api_v2`.
 
 ### Scalar Functions
-Each scalar function is a struct implementing the `VScalar` trait from duckdb-rs (`ReverseDnsLookup`, `DnsLookup`, `DnsLookupAll`, `SetDnsConfig`, `SetConcurrencyLimit`, `SetDnsCacheSize`):
+Each scalar function implements `duckdb_neo::scalar::ScalarCallbacks` (`ReverseDnsLookup`, `DnsLookup`, `DnsLookupAll`, `SetDnsConfig`, `SetConcurrencyLimit`, `SetDnsCacheSize`):
 
-1. **Signatures**: `signatures()` returns one or more `ScalarFunctionSignature::exact()` entries. `dns_lookup` and `dns_lookup_all` have two signatures each, with and without `record_type`.
-
-2. **Vectorized Execution**: `invoke()` processes a whole input chunk at once. The lookup functions build one future per row, run them concurrently with `futures::future::join_all` on the global Tokio runtime, and set NULL for NULL inputs and failed lookups.
-
-3. **String Handling**: Input strings are read as `duckdb_string_t` slices and converted with `DuckString`; results are written with `Inserter::insert()`.
+1. **Signatures**: The entrypoint builds signatures with `SignatureBuilder`. `dns_lookup` and `dns_lookup_all` retain both overloads, with and without `record_type`. Explicit NULL arguments produce NULL.
+2. **Vectorized Execution**: `exec()` processes input vectors with typed readers that handle flat, constant and dictionary storage. Lookup futures run concurrently via `join_all` on the global Tokio runtime.
+3. **Output**: Typed `String` and `List<String>` writers manage values and validity without raw FFI pointers. Output vectors are sized to the input row count.
+4. **Optimizer properties**: Functions are volatile because DNS can change and configuration calls have side effects; these calls must execute when a statement runs.
 
 ### Table Function
-`corey` is a struct implementing the `VTab` trait: `bind()` declares the `txt_record` column and performs the TXT lookup, and `func()` emits the records.
+`Corey` implements `TableFunctionCallbacks`. `bind()` declares the `txt_record` column and resolves TXT records with its own resolver. `init_local_state()` creates a scan cursor, and `exec()` writes batches of records. The scan uses one worker and a cursor per execution to emit each record once. TXT lookup errors become DuckDB input errors.
 
 ### Global Resolver State
 `GLOBAL_DNS_STATE` (a `once_cell::sync::Lazy<DnsResolverState>`) is shared by all functions so the DNS cache is reused across queries. It holds:
@@ -111,8 +110,9 @@ Key implementation details:
 - Errors return NULL rather than propagating exceptions
 
 ### Dependencies
-- `duckdb` (v1.20000.0, built against the stable v1 C API) with "vtab-loadable" and "vscalar" features; it pulls in `duckdb-loadable-macros` for the entry point macro
-- `libduckdb-sys` (v1.20000.0, built against the stable v1 C API) with "loadable-extension" feature
+- `duckdb-neo` (`~0.20000.0`) with `build-extension`, default features disabled; it pulls in `libduckdb-sys` 1.20000.0 with v2 bindings
+- `duckdb-loadable-macros` (`~1.20000.0`) with `neo` for the v2 entrypoint macro
+- The tilde requirements keep Rust patch updates within the same encoded DuckDB release
 - `tokio` (v1.52) with "rt", "net", "macros", "rt-multi-thread", and "sync" features (for async DNS resolution)
 - `hickory-resolver` (v0.26) for DNS lookups (successor to `trust-dns-resolver`)
 - `hickory-proto` (v0.26) for DNS protocol types such as `RecordType`
@@ -121,10 +121,10 @@ Key implementation details:
 - `arc-swap` (v1.9) for lock-free swapping of the resolver, semaphore and settings
 
 ### Configuration
-- **DuckDB target version**: v2.0.0 (tested, `DUCKDB_TEST_VERSION`); minimum v1.5.6 (`TARGET_DUCKDB_VERSION` in Makefile)
-- **Uses unstable C API**: No (`USE_UNSTABLE_C_API=0` in Makefile; DuckDB v2 only loads stable v1 C API extensions or v2 C API ones)
+- **DuckDB target version**: v2.0.0 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
+- **Uses unstable C API**: Yes (`USE_UNSTABLE_C_API=1`); v2 entrypoint with `C_STRUCT_UNSTABLE` metadata
 - **Extension name**: "dns" (Makefile and Cargo.toml)
-- **Rust edition**: 2021
+- **Rust edition**: 2021 (toolchain 1.88 or newer for `duckdb-neo`)
 - **Library type**: cdylib (native dynamic library)
 
 ## Running the Extension Locally

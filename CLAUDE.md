@@ -74,6 +74,8 @@ All code lives in `src/lib.rs`.
 ### Extension Entry Point
 The extension uses `#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]` from `duckdb-loadable-macros`. Its entrypoint receives an `Extension` and registers six scalar functions with `ScalarFunctionBuilder` and `corey` with `TableFunctionBuilder`. The exported symbol is `dns_init_c_api_v2`.
 
+Every signature attaches `FunctionDocumentationBuilder` metadata through `SignatureBuilder::documentation()`. Descriptions, examples and categories appear in `duckdb_functions()`, alongside the declared parameter names and types. All nine registrations use the `dns` category; configuration functions also use `configuration`. Keep the documentation specific to each overload and update it when SQL behavior changes.
+
 ### Scalar Functions
 Each scalar function implements `duckdb_neo::scalar::ScalarCallbacks` (`ReverseDnsLookup`, `DnsLookup`, `DnsLookupAll`, `SetDnsConfig`, `SetConcurrencyLimit`, `SetDnsCacheSize`):
 

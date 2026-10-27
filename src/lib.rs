@@ -7,7 +7,7 @@ use duckdb_neo::{
     enums::{FunctionProperty, FunctionPropertyStability},
     extension::Extension,
     scalar::{ScalarCallbacks, ScalarFunctionBuilder},
-    signature::{FunctionParameter, SignatureBuilder},
+    signature::{FunctionDocumentationBuilder, FunctionParameter, SignatureBuilder},
     table_function::{
         BindFunctionHandle, ExecColumnInfo, InitColumnData, TableFunctionBuilder,
         TableFunctionCallbacks,
@@ -963,6 +963,13 @@ fn register_scalar<T: ScalarCallbacks>(
         .register(extension)
 }
 
+fn function_docs(description: &str, example: &str) -> FunctionDocumentationBuilder {
+    FunctionDocumentationBuilder::new()
+        .description(description)
+        .add_example("", example)
+        .add_category("dns")
+}
+
 #[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]
 pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
     register_scalar(
@@ -970,7 +977,14 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
         "reverse_dns_lookup",
         SignatureBuilder::new()
             .param(FunctionParameter::new::<String>("ip_address"))
-            .return_type(String::logical_type(extension)?),
+            .return_type(String::logical_type(extension)?)
+            .documentation(
+                function_docs(
+                    "Resolves an IPv4 or IPv6 address to its hostname using a reverse DNS (PTR) lookup. Returns NULL for NULL or invalid input, or if the lookup fails.",
+                    "reverse_dns_lookup('8.8.8.8')",
+                )
+                .add_example("IPv6", "reverse_dns_lookup('2001:4860:4860::8888')"),
+            ),
         ReverseDnsLookup,
     )?;
     for with_record_type in [false, true] {
@@ -985,13 +999,37 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
         register_scalar(
             extension,
             "dns_lookup",
-            lookup_signature().return_type(String::logical_type(extension)?),
+            lookup_signature()
+                .return_type(String::logical_type(extension)?)
+                .documentation(if with_record_type {
+                    function_docs(
+                        "Returns the first DNS record of record_type for hostname. Supported types (case-insensitive): A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA. Returns NULL for NULL arguments, an unsupported type, or a failed lookup.",
+                        "dns_lookup('google.com', 'MX')",
+                    )
+                } else {
+                    function_docs(
+                        "Resolves hostname to its first IPv4 address using the configured DNS resolver and cache. Returns NULL for NULL input or if no IPv4 address can be resolved. Use the record_type overload with AAAA for IPv6 records.",
+                        "dns_lookup('google.com')",
+                    )
+                }),
             DnsLookup,
         )?;
         register_scalar(
             extension,
             "dns_lookup_all",
-            lookup_signature().return_type(Vec::<String>::logical_type(extension)?),
+            lookup_signature()
+                .return_type(Vec::<String>::logical_type(extension)?)
+                .documentation(if with_record_type {
+                    function_docs(
+                        "Returns all DNS records of record_type for hostname as a VARCHAR array. Supported types (case-insensitive): A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA. Returns NULL for NULL arguments, an unsupported type, or a failed lookup.",
+                        "dns_lookup_all('google.com', 'TXT')",
+                    )
+                } else {
+                    function_docs(
+                        "Resolves hostname to all IPv4 addresses as a VARCHAR array using the configured DNS resolver and cache. Returns NULL for NULL input or if no IPv4 addresses can be resolved. Use the record_type overload with AAAA for IPv6 records.",
+                        "dns_lookup_all('google.com')",
+                    )
+                }),
             DnsLookupAll,
         )?;
     }
@@ -1000,7 +1038,15 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
         "set_dns_config",
         SignatureBuilder::new()
             .param(FunctionParameter::new::<String>("preset"))
-            .return_type(String::logical_type(extension)?),
+            .return_type(String::logical_type(extension)?)
+            .documentation(
+                function_docs(
+                    "Selects a DNS resolver preset and clears the DNS cache. Presets: default (system configuration, falling back to Google), google, cloudflare, quad9. Names are case-insensitive. Returns a success or error message, or NULL for NULL input.",
+                    "set_dns_config('cloudflare')",
+                )
+                .add_example("System resolver", "set_dns_config('default')")
+                .add_category("configuration"),
+            ),
         SetDnsConfig,
     )?;
     register_scalar(
@@ -1008,7 +1054,14 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
         "set_dns_concurrency_limit",
         SignatureBuilder::new()
             .param(FunctionParameter::new::<i64>("limit"))
-            .return_type(String::logical_type(extension)?),
+            .return_type(String::logical_type(extension)?)
+            .documentation(
+                function_docs(
+                    "Sets the maximum number of concurrent DNS requests. The limit must be greater than zero; the default is 50. Returns a success or error message, or NULL for NULL input.",
+                    "set_dns_concurrency_limit(100)",
+                )
+                .add_category("configuration"),
+            ),
         SetConcurrencyLimit,
     )?;
     register_scalar(
@@ -1016,12 +1069,24 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
         "set_dns_cache_size",
         SignatureBuilder::new()
             .param(FunctionParameter::new::<i64>("size"))
-            .return_type(String::logical_type(extension)?),
+            .return_type(String::logical_type(extension)?)
+            .documentation(
+                function_docs(
+                    "Sets the DNS cache capacity in entries and clears cached records. The size must be greater than zero; the default is 4096. Cached records still expire according to their DNS TTL. Returns a success or error message, or NULL for NULL input.",
+                    "set_dns_cache_size(8192)",
+                )
+                .add_category("configuration"),
+            ),
         SetDnsCacheSize,
     )?;
     TableFunctionBuilder::new(
         "corey",
-        SignatureBuilder::new().param(FunctionParameter::new::<String>("hostname")),
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<String>("hostname"))
+            .documentation(function_docs(
+                "Returns TXT records for hostname as a table with one VARCHAR column, txt_record. The hostname must be a non-NULL constant. Uses a separate resolver with the system configuration; set_dns_config does not affect it. TXT lookup failures are reported as binding errors.",
+                "SELECT * FROM corey('_dmarc.google.com')",
+            )),
         Corey,
     )
     .register(extension)?;

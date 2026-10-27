@@ -27,6 +27,16 @@ LOAD dns;
 
 ## Functions
 
+After loading the extension, descriptions, parameter names and types, examples, and categories are available through `duckdb_functions()`. Each overload has its own documentation:
+
+```sql
+SELECT function_name, parameters, parameter_types, return_type,
+       description, examples, categories
+FROM duckdb_functions()
+WHERE list_contains(categories, 'dns')
+ORDER BY function_name, len(parameters);
+```
+
 ### `dns_lookup(hostname, [record_type])`
 
 Performs a forward DNS lookup to resolve a hostname to its first IPv4 address, or to the first record of a specified DNS record type.

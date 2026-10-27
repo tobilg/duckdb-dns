@@ -111,8 +111,8 @@ Key implementation details:
 - Errors return NULL rather than propagating exceptions
 
 ### Dependencies
-- `duckdb` (v1.10506.1, built against the stable v1 C API) with "vtab-loadable" and "vscalar" features; it pulls in `duckdb-loadable-macros` for the entry point macro
-- `libduckdb-sys` (v1.10506.1, built against the stable v1 C API) with "loadable-extension" feature
+- `duckdb` (v1.20000.0, built against the stable v1 C API) with "vtab-loadable" and "vscalar" features; it pulls in `duckdb-loadable-macros` for the entry point macro
+- `libduckdb-sys` (v1.20000.0, built against the stable v1 C API) with "loadable-extension" feature
 - `tokio` (v1.52) with "rt", "net", "macros", "rt-multi-thread", and "sync" features (for async DNS resolution)
 - `hickory-resolver` (v0.26) for DNS lookups (successor to `trust-dns-resolver`)
 - `hickory-proto` (v0.26) for DNS protocol types such as `RecordType`

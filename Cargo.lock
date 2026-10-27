@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "dns"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arc-swap",
  "duckdb-loadable-macros",

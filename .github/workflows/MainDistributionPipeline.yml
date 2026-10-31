@@ -34,7 +34,7 @@ jobs:
       verify-runners: ${{ steps.sign.outputs.verify-runners }}
     steps:
       - id: sign
-        uses: tobilg/duckdb-extension-self-hosting@b947d26b799d86622f8faf8d70008f55960e9dca # main, before v1.0.0
+        uses: tobilg/duckdb-extension-self-hosting@c82d68503f104421ff7658c0400f21f69e9d4e99 # main, before v1.0.0
         with:
           mode: sign
           extension-name: dns
@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 30
     permissions: {}
     steps:
-      - uses: tobilg/duckdb-extension-self-hosting@b947d26b799d86622f8faf8d70008f55960e9dca # main, before v1.0.0
+      - uses: tobilg/duckdb-extension-self-hosting@c82d68503f104421ff7658c0400f21f69e9d4e99 # main, before v1.0.0
         with:
           mode: verify
 
@@ -63,7 +63,7 @@ jobs:
       group: publish-dns
       cancel-in-progress: false
     steps:
-      - uses: tobilg/duckdb-extension-self-hosting@b947d26b799d86622f8faf8d70008f55960e9dca # main, before v1.0.0
+      - uses: tobilg/duckdb-extension-self-hosting@c82d68503f104421ff7658c0400f21f69e9d4e99 # main, before v1.0.0
         with:
           mode: publish
           bundle-digest: ${{ needs.sign.outputs.bundle-digest }}

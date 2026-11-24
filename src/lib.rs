@@ -1,9 +1,9 @@
 use arc_swap::ArcSwap;
 use duckdb_loadable_macros::duckdb_entrypoint_c_api_v2;
 use duckdb_neo::{
-    bind_arguments::BindArgument,
+    bind_arguments::BindArguments,
     connection::Context,
-    data_chunk::{DataChunkRef, VectorCollection},
+    data_chunk::{DataChunk, VectorCollection},
     enums::{FunctionProperty, FunctionPropertyStability},
     extension::Extension,
     scalar::{ScalarCallbacks, ScalarFunctionBuilder},
@@ -421,9 +421,9 @@ impl ScalarCallbacks for ReverseDnsLookup {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -446,7 +446,7 @@ impl ScalarCallbacks for ReverseDnsLookup {
         output.set_size(input.row_count()?)?;
         let mut writer = output.writer()?;
         for (i, result) in results.iter().enumerate() {
-            writer.set(i, result.as_deref())?;
+            writer.set_option(i, result.as_deref())?;
         }
         Ok(())
     }
@@ -491,9 +491,9 @@ impl ScalarCallbacks for DnsLookup {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -506,6 +506,7 @@ impl ScalarCallbacks for DnsLookup {
         let resolver = &GLOBAL_DNS_STATE.resolver;
         let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load_full();
         let futures = hostnames.iter().enumerate().map(|(i, hostname)| {
+            let record_types = record_types.as_ref();
             let semaphore = &semaphore;
             async move {
                 let hostname = hostname?;
@@ -528,7 +529,7 @@ impl ScalarCallbacks for DnsLookup {
         output.set_size(input.row_count()?)?;
         let mut writer = output.writer()?;
         for (i, result) in results.iter().enumerate() {
-            writer.set(i, result.as_deref())?;
+            writer.set_option(i, result.as_deref())?;
         }
         Ok(())
     }
@@ -573,9 +574,9 @@ impl ScalarCallbacks for DnsLookupAll {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -588,6 +589,7 @@ impl ScalarCallbacks for DnsLookupAll {
         let resolver = &GLOBAL_DNS_STATE.resolver;
         let semaphore = GLOBAL_DNS_STATE.concurrency_semaphore.load_full();
         let futures = hostnames.iter().enumerate().map(|(i, hostname)| {
+            let record_types = record_types.as_ref();
             let semaphore = &semaphore;
             async move {
                 let hostname = hostname?;
@@ -608,14 +610,15 @@ impl ScalarCallbacks for DnsLookupAll {
 
         let mut output = output.cast::<List<String>>()?;
         output.set_size(input.row_count()?)?;
-        let mut writer = output.writer()?;
+        output.set_child_size(results.iter().flatten().map(Vec::len).sum())?;
+        let mut writer = output.list_writer()?;
         for (i, result) in results.iter().enumerate() {
-            writer.set(
-                i,
-                result
-                    .as_ref()
-                    .map(|records| records.iter().map(|record| Some(record.as_str())).collect()),
-            )?;
+            match result {
+                Some(records) => {
+                    writer.set_elements(i, records.iter().map(|s| Some(s.as_str())))?
+                }
+                None => writer.set_null(i)?,
+            }
         }
         Ok(())
     }
@@ -657,9 +660,9 @@ impl ScalarCallbacks for SetDnsConfig {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -670,7 +673,7 @@ impl ScalarCallbacks for SetDnsConfig {
 
         for (i, value) in values.iter().enumerate() {
             let Some(value) = value else {
-                writer.set(i, None)?;
+                writer.set_null(i)?;
                 continue;
             };
             let preset = value.trim().to_lowercase();
@@ -683,7 +686,7 @@ impl ScalarCallbacks for SetDnsConfig {
                 "quad9" => GLOBAL_DNS_STATE.update_config(ResolverConfig::udp_and_tcp(&QUAD9)),
                 _ => {
                     let message = format!("Unknown preset '{}'. Supported presets: default, google, cloudflare, quad9", preset);
-                    writer.set(i, Some(&message))?;
+                    writer.set(i, &message)?;
                     continue;
                 }
             };
@@ -691,7 +694,7 @@ impl ScalarCallbacks for SetDnsConfig {
                 Ok(()) => format!("DNS configuration updated to '{}'", preset),
                 Err(e) => format!("Failed to update DNS configuration: {}", e),
             };
-            writer.set(i, Some(&message))?;
+            writer.set(i, &message)?;
         }
         Ok(())
     }
@@ -736,9 +739,9 @@ impl ScalarCallbacks for SetConcurrencyLimit {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -749,7 +752,7 @@ impl ScalarCallbacks for SetConcurrencyLimit {
 
         for (i, value) in values.iter().enumerate() {
             let Some(&limit) = value else {
-                writer.set(i, None)?;
+                writer.set_null(i)?;
                 continue;
             };
             let message = if limit <= 0 {
@@ -760,7 +763,7 @@ impl ScalarCallbacks for SetConcurrencyLimit {
                     Err(e) => format!("Failed to update concurrency limit: {}", e),
                 }
             };
-            writer.set(i, Some(&message))?;
+            writer.set(i, &message)?;
         }
         Ok(())
     }
@@ -799,9 +802,9 @@ impl ScalarCallbacks for SetDnsCacheSize {
 
     fn exec(
         &self,
+        _context: &Context,
         _bind_data: Option<&Self::BindData>,
         _init_data: Option<&mut Self::InitData>,
-        _context: &Context,
         input: &mut VectorCollection,
         output: Vector<'_, Unknown>,
     ) -> Result<()> {
@@ -812,7 +815,7 @@ impl ScalarCallbacks for SetDnsCacheSize {
 
         for (i, value) in values.iter().enumerate() {
             let Some(&size) = value else {
-                writer.set(i, None)?;
+                writer.set_null(i)?;
                 continue;
             };
             let message = if size <= 0 {
@@ -823,7 +826,7 @@ impl ScalarCallbacks for SetDnsCacheSize {
                     Err(e) => format!("Failed to update cache size: {}", e),
                 }
             };
-            writer.set(i, Some(&message))?;
+            writer.set(i, &message)?;
         }
         Ok(())
     }
@@ -876,15 +879,14 @@ impl TableFunctionCallbacks for Corey {
     fn bind(
         &self,
         context: &Context,
-        arguments: Vec<BindArgument>,
+        arguments: BindArguments<'_>,
         bind_handle: BindFunctionHandle<'_>,
     ) -> Result<Self::BindData> {
         bind_handle.add_result_column("txt_record", &String::logical_type(context)?)?;
-        let hostname = arguments[0]
-            .value
-            .as_ref()
+        let hostname = arguments
+            .arg(0)?
+            .resolved_value::<String>()?
             .ok_or_else(|| duckdb_neo::Error::invalid_input("hostname must be constant"))?
-            .get::<String>()?
             .ok_or_else(|| duckdb_neo::Error::invalid_input("hostname must not be NULL"))?;
         let resolver_state =
             DnsResolverState::new().map_err(|e| duckdb_neo::Error::invalid_input(e.to_string()))?;
@@ -905,21 +907,11 @@ impl TableFunctionCallbacks for Corey {
         Ok(CoreyBindData { txt_records })
     }
 
-    fn init_global_state(
-        &self,
-        _bind_data: &Self::BindData,
-        _context: &Context,
-        _column_data: InitColumnData<'_>,
-    ) -> Result<(Option<Self::GlobalState>, Option<usize>)> {
-        // One worker owns the cursor so each TXT record is emitted exactly once.
-        Ok((None, Some(1)))
-    }
-
     fn init_local_state(
         &self,
+        _context: &Context,
         _bind_data: &Self::BindData,
         _global_state: Option<&Self::GlobalState>,
-        _context: &Context,
         _column_data: InitColumnData<'_>,
     ) -> Result<Option<Self::LocalState>> {
         Ok(Some(0))
@@ -927,11 +919,11 @@ impl TableFunctionCallbacks for Corey {
 
     fn exec(
         &self,
-        bind_data: &Self::BindData,
-        _global_state: Option<&Self::GlobalState>,
-        local_state: Option<&mut Self::LocalState>,
         _context: &Context,
-        mut output: DataChunkRef<'_>,
+        bind_data: &Self::BindData,
+        local_state: Option<&mut Self::LocalState>,
+        _global_state: Option<&Self::GlobalState>,
+        output: &mut DataChunk<'_>,
         _column_info: ExecColumnInfo<'_>,
     ) -> Result<()> {
         let offset = local_state
@@ -942,7 +934,7 @@ impl TableFunctionCallbacks for Corey {
         vector.set_size(count)?;
         let mut writer = vector.writer()?;
         for (i, record) in records.iter().take(count).enumerate() {
-            writer.set(i, Some(record.as_str()))?;
+            writer.set(i, record)?;
         }
         *offset += count;
         Ok(())
@@ -970,7 +962,7 @@ fn function_docs(description: &str, example: &str) -> FunctionDocumentationBuild
         .add_category("dns")
 }
 
-#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]
+#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.1")]
 pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
     register_scalar(
         extension,
@@ -1018,7 +1010,7 @@ pub fn extension_entrypoint(extension: &Extension) -> Result<()> {
             extension,
             "dns_lookup_all",
             lookup_signature()
-                .return_type(Vec::<String>::logical_type(extension)?)
+                .return_type(List::<String>::logical_type(extension)?)
                 .documentation(if with_record_type {
                     function_docs(
                         "Returns all DNS records of record_type for hostname as a VARCHAR array. Supported types (case-insensitive): A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA. Returns NULL for NULL arguments, an unsupported type, or a failed lookup.",

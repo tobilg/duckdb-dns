@@ -56,12 +56,12 @@ Tests are written in SQLLogicTest format in `test/sql/`: `api.test` exercises v2
 ### Testing with the Matching DuckDB Version
 ```bash
 make clean_all
-DUCKDB_TEST_VERSION=2.0.0 make configure
+DUCKDB_TEST_VERSION=2.0.1 make configure
 make debug
 make test_debug
 ```
 
-The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.0`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
+The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.1`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
 
 ### Cleaning
 - **Clean build artifacts**: `make clean`
@@ -72,7 +72,7 @@ The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requi
 All code lives in `src/lib.rs`.
 
 ### Extension Entry Point
-The extension uses `#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.0")]` from `duckdb-loadable-macros`. Its entrypoint receives an `Extension` and registers six scalar functions with `ScalarFunctionBuilder` and `corey` with `TableFunctionBuilder`. The exported symbol is `dns_init_c_api_v2`.
+The extension uses `#[duckdb_entrypoint_c_api_v2(extension_name = "dns", api_version = "v2.0.1")]` from `duckdb-loadable-macros`. Its entrypoint receives an `Extension` and registers six scalar functions with `ScalarFunctionBuilder` and `corey` with `TableFunctionBuilder`. The exported symbol is `dns_init_c_api_v2`.
 
 Every signature attaches `FunctionDocumentationBuilder` metadata through `SignatureBuilder::documentation()`. Descriptions, examples and categories appear in `duckdb_functions()`, alongside the declared parameter names and types. All nine registrations use the `dns` category; configuration functions also use `configuration`. Keep the documentation specific to each overload and update it when SQL behavior changes.
 
@@ -112,8 +112,8 @@ Key implementation details:
 - Errors return NULL rather than propagating exceptions
 
 ### Dependencies
-- `duckdb-neo` (`~0.20000.0`) with `build-extension`, default features disabled; it pulls in `libduckdb-sys` 1.20000.0 with v2 bindings
-- `duckdb-loadable-macros` (`~1.20000.0`) with `neo` for the v2 entrypoint macro
+- `duckdb-neo` (`~0.20001.0`) with `build-extension`, default features disabled; it pulls in `libduckdb-sys` 1.20001.0 with v2 bindings
+- `duckdb-loadable-macros` (`~1.20001.0`) with `neo` for the v2 entrypoint macro
 - The tilde requirements keep Rust patch updates within the same encoded DuckDB release
 - `tokio` (v1.52) with "rt", "net", "macros", "rt-multi-thread", and "sync" features (for async DNS resolution)
 - `hickory-resolver` (v0.26) for DNS lookups (successor to `trust-dns-resolver`)
@@ -123,7 +123,7 @@ Key implementation details:
 - `arc-swap` (v1.9) for lock-free swapping of the resolver, semaphore and settings
 
 ### Configuration
-- **DuckDB target version**: v2.0.0 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
+- **DuckDB target version**: v2.0.1 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
 - **Uses unstable C API**: Yes (`USE_UNSTABLE_C_API=1`); v2 entrypoint with `C_STRUCT_UNSTABLE` metadata
 - **Extension name**: "dns" (Makefile and Cargo.toml)
 - **Rust edition**: 2021 (toolchain 1.88 or newer for `duckdb-neo`)
@@ -144,7 +144,7 @@ SELECT reverse_dns_lookup('8.8.8.8');
 
 ## CI/CD
 
-The project uses DuckDB's extension-ci-tools (`v2.0-cyanoptera` branch, DuckDB v2.0.0) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
+The project uses DuckDB's extension-ci-tools (`v2.0-cyanoptera` branch, DuckDB v2.0.1) via GitHub Actions. The main distribution pipeline builds binaries for multiple platforms (excluding wasm_mvp, wasm_eh, wasm_threads, and linux_amd64_musl).
 
 The workflow is defined in `.github/workflows/MainDistributionPipeline.yml`.
 

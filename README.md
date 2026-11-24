@@ -481,12 +481,12 @@ make test_release  # Test release build
 
 ```shell
 make clean_all
-DUCKDB_TEST_VERSION=2.0.0 make configure
+DUCKDB_TEST_VERSION=2.0.1 make configure
 make debug
 make test_debug
 ```
 
-The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.0`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
+The extension uses DuckDB's experimental v2 C API through `duckdb-neo` and requires the matching DuckDB release (currently `v2.0.1`). DuckDB 1.x is no longer supported. Keep the crates, `api_version` in `src/lib.rs`, `TARGET_DUCKDB_VERSION`, the CI DuckDB version and `DUCKDB_TEST_VERSION` aligned. The test venv in `configure/` is created only once: after upgrading DuckDB, run `make clean_all` before `make configure` to install the matching runtime.
 
 ## Development
 
@@ -538,9 +538,9 @@ All functions:
 ### Configuration
 
 - **Extension Name**: `dns`
-- **DuckDB Version**: v2.0.0 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
+- **DuckDB Version**: v2.0.1 (`TARGET_DUCKDB_VERSION` and `DUCKDB_TEST_VERSION` in Makefile)
 - **Rust Edition**: 2021 (toolchain 1.88 or newer for `duckdb-neo`)
-- **Rust Bindings**: `duckdb-neo` `~0.20000.0` and `duckdb-loadable-macros` `~1.20000.0`
+- **Rust Bindings**: `duckdb-neo` `~0.20001.0` and `duckdb-loadable-macros` `~1.20001.0`
 - **Uses Unstable C API**: Yes (`USE_UNSTABLE_C_API=1`); v2 entrypoint with `C_STRUCT_UNSTABLE` metadata
 - **Library Type**: cdylib (native dynamic library)
 

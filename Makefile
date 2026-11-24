@@ -8,9 +8,9 @@ EXTENSION_NAME=dns
 USE_UNSTABLE_C_API=1
 
 # DuckDB release required by the extension ABI and entrypoint
-TARGET_DUCKDB_VERSION=v2.0.0
+TARGET_DUCKDB_VERSION=v2.0.1
 # DuckDB version to test with
-DUCKDB_TEST_VERSION?=2.0.0
+DUCKDB_TEST_VERSION?=2.0.1
 
 
 all: configure debug
